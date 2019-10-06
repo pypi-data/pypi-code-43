@@ -1,0 +1,1 @@
+from . import pyqt5
