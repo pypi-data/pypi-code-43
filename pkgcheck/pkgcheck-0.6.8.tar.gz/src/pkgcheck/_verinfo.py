@@ -1,0 +1,1 @@
+version_info={'rev': '4212c51468fc4621c8585670e86c91a27d59d575', 'date': 'Sun, 6 Oct 2019 06:20:58 -0600', 'tag': '0.6.8', 'commits': 0}
