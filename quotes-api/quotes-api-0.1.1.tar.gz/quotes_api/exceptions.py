@@ -1,0 +1,2 @@
+class InvalidQuote(Exception):
+    pass
