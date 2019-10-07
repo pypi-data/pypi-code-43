@@ -1,0 +1,2 @@
+class EmptyQuerysetError(Exception):
+    pass
