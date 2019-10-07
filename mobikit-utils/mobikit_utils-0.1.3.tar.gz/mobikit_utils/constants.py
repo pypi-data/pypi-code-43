@@ -1,0 +1,11 @@
+#
+# Copyright (c) 2019 Mobikit, Inc.
+#
+# This source code is licensed under the MIT license found in the
+# LICENSE file in the root directory of this source tree.
+#
+
+from types import SimpleNamespace
+
+
+cloud_providers = SimpleNamespace(aws="aws", gcp="gcp")
