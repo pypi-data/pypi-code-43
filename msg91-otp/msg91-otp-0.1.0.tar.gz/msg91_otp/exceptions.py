@@ -1,0 +1,2 @@
+class InvalidCountryCode(BaseException):
+    pass
