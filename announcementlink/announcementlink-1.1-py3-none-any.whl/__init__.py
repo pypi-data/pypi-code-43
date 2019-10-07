@@ -1,0 +1,1 @@
+from announcementlink.main import *
