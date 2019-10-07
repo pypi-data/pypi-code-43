@@ -1,0 +1,18 @@
+
+from setuptools import setup
+
+version = 0.4
+setup(name='doctable',
+    version='{}'.format(version),
+    description='Simple database interface for text analysis applications.',
+    url='https://github.com/devincornell/doctable',
+    author='Devin J. Cornell',
+    author_email='devinj.cornell@gmail.com',
+    license='MIT',
+    packages=['doctable'],
+    requires=['sqlalchemy', 'pickle', 'pandas', 'sqlite3'],
+    zip_safe=False,
+    download_url='https://github.com/devincornell/doctable/archive/v{}.tar.gz'.format(version)
+     )
+
+
