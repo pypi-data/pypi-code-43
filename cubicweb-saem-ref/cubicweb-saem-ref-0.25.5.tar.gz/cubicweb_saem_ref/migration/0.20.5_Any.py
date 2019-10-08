@@ -1,0 +1,1 @@
+sync_schema_props_perms('seda_originating_agency_to')
