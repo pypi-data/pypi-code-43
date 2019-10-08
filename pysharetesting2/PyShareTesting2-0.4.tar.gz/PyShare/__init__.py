@@ -1,0 +1,1 @@
+from PyShare import Share as Share
