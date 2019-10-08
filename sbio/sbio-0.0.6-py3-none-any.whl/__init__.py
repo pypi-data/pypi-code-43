@@ -1,0 +1,1 @@
+name = "fastq_quality"
