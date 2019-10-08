@@ -1,0 +1,2 @@
+class ManagedException(Exception):
+    pass
