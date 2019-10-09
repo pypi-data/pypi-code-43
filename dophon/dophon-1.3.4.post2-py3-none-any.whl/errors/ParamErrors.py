@@ -1,0 +1,2 @@
+class ReqParamError(Exception):
+    pass
