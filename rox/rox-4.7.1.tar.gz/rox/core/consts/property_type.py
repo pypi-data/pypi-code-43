@@ -1,0 +1,22 @@
+from collections import namedtuple
+
+PropertyType = namedtuple('PropertyType', ['value', 'name'])
+
+CACHE_MISS_RELATIVE_URL = PropertyType(1, 'cache_miss_relative_url')
+PACKAGE_NAME = PropertyType(2, "package_name")
+VERSION_NAME = PropertyType(3, "version_name")
+LIB_VERSION = PropertyType(4, "lib_version")
+ROLLOUT_BUILD = PropertyType(5, "rollout_build")
+API_VERSION = PropertyType(6, "api_version")
+BUID = PropertyType(7, "buid")
+BUID_GENERATORS_LIST = PropertyType(8, "buid_generators_list")
+APP_VERSION = PropertyType(9, "app_version")
+APP_RELEASE = PropertyType(10, "app_release")
+DISTINCT_ID = PropertyType(11, "distinct_id")
+APP_KEY = PropertyType(12, "app_key")
+FEATURE_FLAGS = PropertyType(13, "feature_flags")
+REMOTE_VARIABLES = PropertyType(14, "remoteVariables")
+CUSTOM_PROPERTIES = PropertyType(15, "custom_properties")
+PLATFORM = PropertyType(16, "platform")
+DEV_MODE_SECRET = PropertyType(17, "devModeSecret")
+STATE_MD5 = PropertyType(18, "state_md5")
