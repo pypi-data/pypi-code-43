@@ -1,0 +1,2 @@
+class HelmUploadError(Exception):
+    pass
