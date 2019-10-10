@@ -1,0 +1,4 @@
+from .dijkstra_method import DijkstraMethod
+from .distance_calculator_method import DistanceCalculatorMethod
+from .landmarks_method import LandmarksMethod
+from .floyd_warshall_method import FloydWarshallMethod
