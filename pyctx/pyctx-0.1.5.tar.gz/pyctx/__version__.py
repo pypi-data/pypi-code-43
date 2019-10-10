@@ -1,0 +1,7 @@
+__title__ = 'pyctx'
+__description__ = 'Context package to use data between function calls, use timers and log it.'
+__url__ = 'https://github.com/molcay/pyctx'
+__version__ = '0.1.5'
+__author__ = 'M. Olcay TERCANLI'
+__author_email__ = 'molcay@mail.com'
+__license__ = 'MIT'
