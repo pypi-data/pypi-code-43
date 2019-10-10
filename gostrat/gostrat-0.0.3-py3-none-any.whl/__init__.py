@@ -1,0 +1,1 @@
+from .gostrat import main
