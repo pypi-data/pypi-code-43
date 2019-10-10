@@ -1,0 +1,5 @@
+Ans="""
+
+[{"id":"aa6daed4.1bbad8","type":"tab","label":"Flow 1","disabled":false,"info":""},{"id":"a7a70a8a.eed708","type":"inject","z":"aa6daed4.1bbad8","name":"","topic":"","payload":"","payloadType":"num","repeat":"","crontab":"","once":false,"onceDelay":0.1,"x":147.26666259765625,"y":296,"wires":[["c8f0a837.25b83"]]},{"id":"c8f0a837.25b83","type":"function","z":"aa6daed4.1bbad8","name":"","func":"var fibonacci_series = function (n) \n{\n  if (n===1) \n  {\n    return [0, 1];\n  } \n  else \n  {\n    var s = fibonacci_series(n - 1);\n    s.push(s[s.length - 1] + s[s.length - 2]);\n    return s;\n  }\n};\n\nmsg.payload=fibonacci_series(10);\nreturn msg;","outputs":1,"noerr":0,"x":360.26666259765625,"y":296.3666687011719,"wires":[["664784a6.08df24"]]},{"id":"664784a6.08df24","type":"debug","z":"aa6daed4.1bbad8","name":"","active":true,"tosidebar":true,"console":false,"tostatus":false,"complete":"payload","targetType":"msg","x":577.2666320800781,"y":294.6166687011719,"wires":[]}]
+
+"""

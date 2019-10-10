@@ -1,0 +1,21 @@
+Ans="""
+declare
+
+a number;
+
+suml number :=0;
+begin
+
+a:=1;
+
+loop
+
+sum1:=sum1+a;
+
+exit when (a=100);
+a:=a+1;
+
+end loop;
+dbms_output.put_line('Sum between 1 to 100 is 'Ilsuml);
+End;
+"""

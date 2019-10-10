@@ -1,0 +1,5 @@
+Ans="""
+
+[{"id":"e1858e.76bf3a7","type":"tab","label":"Flow 1","disabled":false,"info":""},{"id":"21dba02b.35f3","type":"ui_button","z":"e1858e.76bf3a7","name":"","group":"8d674e84.4b2c3","order":0,"width":0,"height":0,"passthru":false,"label":"button","tooltip":"","color":"","bgcolor":"","icon":"","payload":"Hello World","payloadType":"str","topic":"","x":269.26666259765625,"y":386.23333740234375,"wires":[["e0ee9dad.0f36d","99054b60.b8ccb"]]},{"id":"e0ee9dad.0f36d","type":"ui_text","z":"e1858e.76bf3a7","group":"8d674e84.4b2c3","order":1,"width":0,"height":0,"name":"","label":"text","format":"{{msg.payload}}","layout":"col-center","x":466.2666320800781,"y":300.9333190917969,"wires":[]},{"id":"99054b60.b8ccb","type":"debug","z":"e1858e.76bf3a7","name":"","active":true,"tosidebar":true,"console":false,"tostatus":false,"complete":"payload","targetType":"msg","x":461.2666320800781,"y":452.6166687011719,"wires":[]},{"id":"8d674e84.4b2c3","type":"ui_group","z":"","name":"Default","tab":"90718453.2bde08","disp":true,"width":"6","collapse":false},{"id":"90718453.2bde08","type":"ui_tab","z":"","name":"Demo","icon":"dashboard","disabled":false,"hidden":false}]
+
+"""

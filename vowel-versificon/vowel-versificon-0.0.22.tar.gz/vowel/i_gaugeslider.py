@@ -1,0 +1,5 @@
+Ans="""
+
+[{"id":"e1858e.76bf3a7","type":"tab","label":"Flow 1","disabled":false,"info":""},{"id":"40de9a5e.ffdb6c","type":"ui_gauge","z":"e1858e.76bf3a7","name":"","group":"8d674e84.4b2c3","order":1,"width":0,"height":0,"gtype":"gage","title":"gauge","label":"units","format":"{{value}}","min":0,"max":"100","colors":["#00b500","#e6e600","#ca3838"],"seg1":"33","seg2":"66","x":507.2666320800781,"y":295.3666687011719,"wires":[]},{"id":"435402b3.87ddcc","type":"ui_slider","z":"e1858e.76bf3a7","name":"","label":"slider","tooltip":"","group":"8d674e84.4b2c3","order":0,"width":0,"height":0,"passthru":true,"outs":"all","topic":"","min":0,"max":"100","step":1,"x":275.26666259765625,"y":299.73333740234375,"wires":[["40de9a5e.ffdb6c"]]},{"id":"8d674e84.4b2c3","type":"ui_group","z":"","name":"Default","tab":"90718453.2bde08","disp":true,"width":"6","collapse":false},{"id":"90718453.2bde08","type":"ui_tab","z":"","name":"Demo","icon":"dashboard","disabled":false,"hidden":false}]
+
+"""
