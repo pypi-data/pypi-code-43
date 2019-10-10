@@ -1,0 +1,80 @@
+# -*- coding: utf-8 -*-
+# Copyright (C) 2018-2019 fjord-technologies
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""covenant.plugins.http"""
+
+import logging
+import requests
+
+from covenant.classes.exceptions import CovenantConfigurationError
+from covenant.classes.plugins import CovenantPlugBase, CovenantTargetFailed, PLUGINS
+
+LOG = logging.getLogger('covenant.plugins.http')
+
+_ALLOWED_METHODS = ('delete',
+                    'get',
+                    'head',
+                    'patch',
+                    'post',
+                    'put')
+
+
+class CovenantHttpPlugin(CovenantPlugBase):
+    PLUGIN_NAME = 'http'
+
+    def do_metrics(self, obj): # pylint: disable=unused-argument
+        for target in self.targets:
+            (data, req) = (None, None)
+
+            cfg         = target.config
+            method      = 'get'
+            xformat     = None
+
+            if 'format' in cfg:
+                xformat = cfg.pop('format').lower()
+
+            if 'uri' in cfg and not cfg.get('url'):
+                cfg['url'] = cfg.pop('uri')
+
+            if 'method' in cfg:
+                method = cfg.pop('method').lower()
+
+            if 'ssl_verify' in cfg:
+                cfg['verify'] = bool(cfg.pop('ssl_verify'))
+
+            if target.credentials:
+                cfg['auth'] = (target.credentials['username'],
+                               target.credentials['password'])
+
+            if method not in _ALLOWED_METHODS:
+                raise CovenantConfigurationError("invalid http method: %r" % method)
+
+            try:
+                req = getattr(requests, method)(**cfg)
+
+                if req.status_code != requests.codes['ok']:
+                    raise LookupError("invalid status code: %r. (error: %r)"
+                                      % (req.status_code, req.text))
+
+                if xformat == 'json':
+                    data = req.json()
+                else:
+                    data = req.text
+            except Exception as e:
+                data = CovenantTargetFailed(e)
+                LOG.exception("error on target: %r. exception: %r",
+                              target.name,
+                              e)
+            finally:
+                if req:
+                    req.close()
+
+            target(data)
+
+        return self.generate_latest()
+
+
+if __name__ != "__main__":
+    def _start():
+        PLUGINS.register(CovenantHttpPlugin)
+    _start()
