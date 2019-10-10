@@ -1,0 +1,48 @@
+import common
+import csutils
+
+
+def Settings():
+    settings = csutils.Settings()
+    settings["cases"]["scenario"] = "Camel"
+    settings["cases"]["test"] = "Camel"
+    return settings
+
+
+def HelpSettings():
+    settings = csutils.HelpSettings()
+    return settings
+
+
+def Generate(parsed, settings):
+    scenarios = parsed[0]
+    feature = parsed[1]
+    buffer = """
+namespace [[rootnamespace]][[namespace]]
+{
+  using Microsoft.VisualStudio.TestTools.UnitTesting;
+
+  /// <summary>
+  /// Gherkin DSL feature
+  /// </summary>
+  [TestClass]
+  public class [[className]]
+  {
+[[TestBody]]
+  }
+}
+"""[1:]
+
+    namespace = csutils.FeatureName(feature, settings["cases"]["namespace"])
+    buffer = buffer.replace("[[rootnamespace]]", settings["rootnamespace"])
+    buffer = buffer.replace("[[namespace]]", namespace)
+
+    # Print the class
+    className = common.Tokenise("Feature", settings["cases"]["class"])
+    buffer = buffer.replace("[[className]]", className)
+
+    cs = csutils.CSharp(settings, "TestMethod")
+    testBody = common.TestBody(scenarios, settings, cs)
+    buffer = buffer.replace("[[TestBody]]", testBody)
+
+    return buffer
