@@ -1,0 +1,1 @@
+name = "proxydata-scrapy"
