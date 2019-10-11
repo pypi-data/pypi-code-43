@@ -1,0 +1,223 @@
+# -*- coding: utf-8 -*-
+# Copyright (C) 2015-2019 Adrien Delle Cave
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""sonicprobe.libs.workerpool"""
+
+import gc
+import logging
+import threading
+import time
+
+from six.moves import queue as _queue, range as xrange
+
+LOG = logging.getLogger('sonicprobe.workerpool')
+
+
+class WorkerExit(object): # pylint: disable=useless-object-inheritance,too-few-public-methods
+    pass
+
+
+class WorkerThread(threading.Thread):
+    def __init__(self, xid, pool):
+        threading.Thread.__init__(self)
+        self.daemon     = True
+        self.pool       = pool
+        self.life_time  = None
+        self.nb_tasks   = None
+        self.xid        = xid
+
+    def start(self):
+        self.nb_tasks   = 0
+        self.life_time  = time.time()
+        return threading.Thread.start(self)
+
+    def expired(self):
+        if self.pool.life_time > 0 \
+           and self.life_time > 0 \
+           and (time.time() - self.life_time) >= self.pool.life_time:
+            LOG.debug("worker expired")
+            return True
+
+        return False
+
+    def max_tasks_reached(self):
+        if self.pool.max_tasks > 0 \
+           and self.nb_tasks > 0 \
+           and self.nb_tasks >= self.pool.max_tasks:
+            LOG.debug("worker max tasks reached")
+            return True
+
+        return False
+
+    def run(self):
+        name = None
+
+        while True:
+            if self.expired() or self.max_tasks_reached():
+                if self.pool.auto_gc:
+                    gc.collect()
+                break
+
+            if self.pool.tasks.empty():
+                continue
+
+            try:
+                task = self.pool.tasks.get_nowait()
+            except _queue.Empty:
+                continue
+
+            if isinstance(task, WorkerExit):
+                break
+
+            self.pool.count_lock.acquire()
+            self.pool.working += 1
+            if (not self.pool.tasks.empty() or self.pool.working >= self.pool.workers) \
+               and (self.pool.workers < self.pool.max_workers):
+                self.pool.count_lock.release()
+                self.pool.add()
+            else:
+                self.pool.count_lock.release()
+
+            func, cb, name, complete, args, kargs = task
+            self.setName(self.pool.get_name(self.xid, name))
+
+            ret = None
+
+            try:
+                self.nb_tasks += 1
+                ret = func(*args, **kargs)
+                if cb:
+                    cb(ret)
+            except Exception as e:
+                LOG.exception("unexpected error: %r", e)
+            finally:
+                if complete:
+                    complete(ret)
+                del func, args, kargs
+
+            self.pool.tasks.task_done()
+            self.pool.count_lock.acquire()
+            self.pool.working -= 1
+            self.pool.count_lock.release()
+
+        self.pool.count_lock.acquire()
+        self.pool.workers -= 1
+        if not self.pool.workers:
+            self.pool.kill_event.set()
+
+        if (not self.pool.tasks.empty() \
+            or (self.pool.workers > 0 and self.pool.working >= self.pool.workers)) \
+           and (self.pool.workers < self.pool.max_workers):
+            self.pool.count_lock.release()
+            self.pool.add(name = name, xid = self.xid)
+        else:
+            self.pool.count_lock.release()
+
+
+class WorkerPool(object): # pylint: disable=useless-object-inheritance
+    def __init__(self, queue = None, max_workers = 10, life_time = None, name = None, max_tasks = None, auto_gc = True):
+        self.tasks       = queue or _queue.Queue()
+        self.workers     = 0
+        self.working     = 0
+        self.max_workers = max_workers
+        self.life_time   = life_time
+        self.name        = name
+        self.max_tasks   = max_tasks
+        self.auto_gc     = auto_gc
+
+        self.kill_event  = threading.Event()
+        self.count_lock  = threading.RLock()
+
+        self.kill_event.set()
+
+    def count_workers(self):
+        self.count_lock.acquire()
+        r = self.workers
+        self.count_lock.release()
+        return r
+
+    def count_working(self):
+        self.count_lock.acquire()
+        r = self.working
+        self.count_lock.release()
+        return r
+
+    def kill(self, nb = 1):
+        """
+        Kill one or many workers.
+        """
+        self.count_lock.acquire()
+        if nb > self.workers:
+            nb = self.workers
+        self.count_lock.release()
+        for x in xrange(nb): # pylint: disable=unused-variable
+            self.tasks.put(WorkerExit())
+
+    def set_max_workers(self, nb):
+        """
+        Set the maximum workers to create.
+        """
+        self.count_lock.acquire()
+        self.max_workers = nb
+        if self.workers > self.max_workers:
+            self.kill(self.workers - self.max_workers)
+        self.count_lock.release()
+
+    def get_max_workers(self):
+        return self.max_workers
+
+    def get_name(self, xid, name = None):
+        if name:
+            return "%s:%d" % (name, xid)
+
+        if self.name:
+            return "%s:%d" % (self.name, xid)
+
+        return "wpool:%d" % xid
+
+    def add(self, nb = 1, name = None, xid = None):
+        """
+        Create one or many workers.
+        """
+        for x in xrange(nb): # pylint: disable=unused-variable
+            self.count_lock.acquire()
+            if self.workers >= self.max_workers:
+                self.count_lock.release()
+                continue
+            self.workers += 1
+            if xid is None:
+                xid = self.workers
+            self.count_lock.release()
+            self.kill_event.clear()
+            w = WorkerThread(xid, self)
+            w.setName(self.get_name(xid, name))
+            w.start()
+
+    def run(self, target, callback = None, name = None, complete = None, *args, **kargs):
+        """
+        Start task.
+        @target: callable to run with *args and **kargs arguments.
+        @callback: callable executed after target.
+        @name: thread name
+        @complete: complete executed after target in finally
+        """
+        self.count_lock.acquire()
+        if not self.workers:
+            self.count_lock.release()
+            self.add(name = name)
+        else:
+            self.count_lock.release()
+        self.tasks.put((target, callback, name, complete, args, kargs))
+
+    def killall(self, wait = None):
+        """
+        Kill all active workers.
+        @wait: Seconds to wait until last worker ends.
+               If None it waits forever.
+        """
+        with self.tasks.mutex:
+            self.tasks.queue.clear()
+        self.count_lock.acquire()
+        self.kill(self.workers)
+        self.count_lock.release()
+        self.kill_event.wait(wait)
