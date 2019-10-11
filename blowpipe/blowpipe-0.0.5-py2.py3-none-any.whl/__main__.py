@@ -1,0 +1,3 @@
+import blowpipe
+
+blowpipe.main()
