@@ -1,0 +1,17 @@
+yotta = 1.e24
+zetta = 1.e21
+exa = 1.e18
+peta = 1.e15
+tera = 1.e12
+giga = 1.e9
+mega = 1.e6
+kilo = 1.e3
+hecto = 1.e0
+deca = 1.e-3
+deci = 1.e-6
+centi = 1.e-9
+milli = 1.e-12
+micro = 1.e-15
+nano = 1.e-18
+pico = 1.e-21
+femto = 1.e-24
