@@ -1,0 +1,295 @@
+import os
+import subprocess
+import sys
+import threading
+
+HTTP_EXPORT = 'export'
+HTTP_IMPORT = 'import'
+
+
+class ExaSQLThread(threading.Thread):
+    """
+    Thread class which re-throws any Exception to parent thread
+    """
+    def __init__(self, connection, exa_proxy_list, compression):
+        self.connection = connection
+        self.exa_proxy_list = exa_proxy_list if isinstance(exa_proxy_list, list) else [exa_proxy_list]
+        self.compression = compression
+
+        self.params = {}
+        self.http_proc = None
+        self.exc = None
+
+        super().__init__()
+
+    def set_http_proc(self, http_proc):
+        self.http_proc = http_proc
+
+    def run(self):
+        try:
+            self.run_sql()
+        except BaseException as e:
+            self.exc = e
+
+            # In case of SQL error terminate HTTP server
+            # It closes other end of pipe and interrupts I/O in callback function in main thread
+            if self.http_proc is not None:
+                self.http_proc.terminate()
+
+    def run_sql(self):
+        pass
+
+    def join(self, *args):
+        super().join(*args)
+
+        if self.exc:
+            raise self.exc
+
+    def build_file_list(self):
+        files = list()
+
+        if 'format' in self.params:
+            if self.params['format'] not in ['gz', 'bz2', 'zip']:
+                raise ValueError(f"Unsupported compression format: {self.params['format']}")
+
+            ext = self.params['format']
+        else:
+            ext = 'gz' if self.compression else 'csv'
+
+        if self.connection.options['encryption']:
+            prefix = 'https://'
+        else:
+            prefix = 'http://'
+
+        for i, proxy in enumerate(self.exa_proxy_list):
+            files.append(f"AT '{prefix}{proxy}' FILE '{str(i).rjust(3, '0')}.{ext}'")
+
+        return '\n'.join(files)
+
+    def build_columns_list(self):
+        if 'columns' not in self.params:
+            return ''
+
+        return f"({','.join([self.connection.format.default_format_ident(c) for c in self.params['columns']])})"
+
+
+class ExaSQLExportThread(ExaSQLThread):
+    """
+    Build and run IMPORT query into separate thread
+    Main thread is busy outputting data in callbacks
+    """
+    def __init__(self, connection, exa_proxy_list, compression, query_or_table, export_params):
+        super().__init__(connection, exa_proxy_list, compression)
+
+        self.query_or_table = query_or_table
+        self.params = export_params
+
+    def run_sql(self):
+        if isinstance(self.query_or_table, tuple) or str(self.query_or_table).strip().find(' ') == -1:
+            export_source = self.connection.format.default_format_ident(self.query_or_table)
+        else:
+            # New lines are mandatory to handle queries with single-line comments '--'
+            export_query = self.query_or_table.lstrip(" \n").rstrip(" \n;")
+            export_source = f'(\n{export_query}\n)'
+
+            if self.params.get('columns'):
+                raise ValueError("Export option 'columns' is not compatible with SQL query export source")
+
+        query = f"EXPORT {export_source}{self.build_columns_list()} INTO CSV\n"
+        query += self.build_file_list()
+
+        if self.params.get('delimit'):
+            delimit = str(self.params['delimit']).upper()
+
+            if delimit != 'AUTO' and delimit != 'ALWAYS' and delimit != 'NONE':
+                raise ValueError('Invalid value for export parameter DELIMIT: ' + delimit)
+
+            query += '\n DELIMIT = ' + delimit
+
+        if self.params.get('encoding'):
+            query += '\nENCODING = ' + self.connection.format.quote(self.params['encoding'])
+
+        if self.params.get('null'):
+            query += '\nNULL = ' + self.connection.format.quote(self.params['null'])
+
+        if self.params.get('row_separator'):
+            query += '\nROW SEPARATOR = ' + self.connection.format.quote(self.params['row_separator'])
+
+        if self.params.get('column_separator'):
+            query += '\nCOLUMN SEPARATOR = ' + self.connection.format.quote(self.params['column_separator'])
+
+        if self.params.get('column_delimiter'):
+            query += '\nCOLUMN DELIMITER = ' + self.connection.format.quote(self.params['column_delimiter'])
+
+        if self.params.get('with_column_names'):
+            query += '\nWITH COLUMN NAMES'
+
+        self.connection.execute(query)
+
+
+class ExaSQLImportThread(ExaSQLThread):
+    """
+    Build and run EXPORT query into separate thread
+    Main thread is busy parsing results in callbacks
+    """
+    def __init__(self, connection, http_proc, compression, table, import_params):
+        super().__init__(connection, http_proc, compression)
+
+        self.table = table
+        self.params = import_params
+
+    def run_sql(self):
+        table_ident = self.connection.format.default_format_ident(self.table)
+
+        query = f"IMPORT INTO {table_ident}{self.build_columns_list()} FROM CSV\n"
+        query += self.build_file_list()
+
+        if self.params.get('encoding'):
+            query += '\nENCODING = ' + self.connection.format.quote(self.params['encoding'])
+
+        if self.params.get('null'):
+            query += '\nNULL ' + self.connection.format.quote(self.params['null'])
+
+        if self.params.get('skip'):
+            query += '\nSKIP = ' + self.connection.format.safe_decimal(self.params['skip'])
+
+        if self.params.get('trim'):
+            trim = str(self.params['trim']).upper()
+
+            if trim != 'TRIM' and trim != 'LTRIM' and trim != 'RTRIM':
+                raise ValueError('Invalid value for import parameter TRIM: ' + trim)
+
+            query += '\n' + trim
+
+        if self.params.get('row_separator'):
+            query += '\nROW SEPARATOR = ' + self.connection.format.quote(self.params['row_separator'])
+
+        if self.params.get('column_separator'):
+            query += '\nCOLUMN SEPARATOR = ' + self.connection.format.quote(self.params['column_separator'])
+
+        if self.params.get('column_delimiter'):
+            query += '\nCOLUMN DELIMITER = ' + self.connection.format.quote(self.params['column_delimiter'])
+
+        self.connection.execute(query)
+
+
+class ExaHTTPProcess(object):
+    """
+    HTTP communication and compression / decompression is offloaded to sub-process
+    It communicates with main process using pipes
+    """
+    def __init__(self, host, port, compression, encryption, mode, initial_ppid=None):
+        self.host = host
+        self.port = port
+        self.compression = compression
+        self.encryption = encryption
+        self.mode = mode
+        self.initial_ppid = initial_ppid
+
+        self.server = None
+        self.proxy = None
+        self.proc = None
+
+        self.read_pipe = None
+        self.write_pipe = None
+
+    def start(self):
+        args = [sys.executable,
+                '-m', 'pyexasol_utils.http',
+                '--host', self.host,
+                '--port', str(self.port),
+                '--mode', self.mode,
+                '--ppid', str(os.getpid())
+                ]
+
+        if self.compression:
+            args.append('--compression')
+
+        if self.encryption:
+            args.append('--encryption')
+
+        self.proc = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, bufsize=0)
+        self.proxy = self.proc.stdout.readline().decode().rstrip('\n')
+
+        self.read_pipe = self.proc.stdout
+        self.write_pipe = self.proc.stdin
+
+    def join(self):
+        self.read_pipe.close()
+        self.write_pipe.close()
+
+        code = self.proc.wait()
+
+        if code != 0:
+            raise RuntimeError(f"HTTP transport process finished with exitcode: {code}")
+
+    def terminate(self):
+        if self.proc:
+            self.proc.terminate()
+
+    def get_proxy(self):
+        if self.proxy is None:
+            raise RuntimeError("Proxy 'host:port' string is not available")
+
+        return self.proxy
+
+
+class ExaHTTPTransportWrapper(object):
+    """
+    Start fake HTTP server, obtain proxy "host:port" string
+    Send it to parent process
+
+    Block into "export_to_callback()" or "import_from_callback()" call,
+    wait for incoming connection, process data, exit.
+    """
+    def __init__(self, host, port, mode, compression=False, encryption=False):
+        self.http_proc = ExaHTTPProcess(host, port, compression, encryption, mode)
+        self.http_proc.start()
+
+        self.proxy = self.http_proc.get_proxy()
+
+    def get_proxy(self):
+        return self.proxy
+
+    def export_to_callback(self, callback, dst, callback_params=None):
+        if not callable(callback):
+            raise ValueError('Callback argument is not callable')
+
+        if callback_params is None:
+            callback_params = {}
+
+        try:
+            result = callback(self.http_proc.read_pipe, dst, **callback_params)
+
+            self.http_proc.read_pipe.close()
+            self.http_proc.join()
+
+            return result
+        except Exception as e:
+            # Close HTTP Server if it is still running
+            self.http_proc.terminate()
+
+            raise e
+
+    def import_from_callback(self, callback, src, callback_params=None):
+        if not callable(callback):
+            raise ValueError('Callback argument is not callable')
+
+        if callback_params is None:
+            callback_params = {}
+
+        try:
+            result = callback(self.http_proc.write_pipe, src, **callback_params)
+
+            self.http_proc.write_pipe.close()
+            self.http_proc.join()
+
+            return result
+        except Exception as e:
+            # Close HTTP Server if it is still running
+            self.http_proc.terminate()
+
+            raise e
+
+    def __repr__(self):
+        return f'<{self.__class__.__name__} proxy={self.proxy}>'
