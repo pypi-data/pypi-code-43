@@ -1,0 +1,1 @@
+name = "HC_stock"
