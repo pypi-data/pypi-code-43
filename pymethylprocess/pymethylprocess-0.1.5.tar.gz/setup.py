@@ -1,0 +1,38 @@
+from setuptools import setup
+with open('README.md','r', encoding='utf-8') as f:
+      long_description = f.read()
+setup(name='pymethylprocess',
+      version='0.1.5',
+      description='Preprocessing methylation pipeline, written in python. Easy to use and highly parallelized.',
+      url='https://github.com/Christensen-Lab-Dartmouth/PyMethylProcess',
+      author='Joshua Levy',
+      author_email='joshualevy44@berkeley.edu',
+      license='MIT',
+      scripts=['bin/run_parallel','bin/pymethyl-install_r_dependencies'],
+      entry_points={
+            'console_scripts':['pymethyl-basic-install=pymethylprocess.basic_installer:main',
+                               'pymethyl-install=pymethylprocess.installer:install',
+                               'pymethyl-visualize=pymethylprocess.visualizations:visualize',
+                               'pymethyl-preprocess=pymethylprocess.preprocess:preprocess',
+                               'pymethyl-utils=pymethylprocess.utils:util',
+                               'pymethyl-basic-ml=pymethylprocess.run_rand_forest:main']
+      },
+      long_description=long_description,
+      long_description_content_type='text/markdown',
+      packages=['pymethylprocess'],
+      install_requires=['rpy2==2.9.4',
+                        'numpy',
+                        'kneed',
+                        'Cython',
+                        'pathos',
+                        'nevergrad',
+                        'umap-learn>=0.3.7',
+                        'plotly>=3.4.2',
+                        'fancyimpute>=0.4.2',
+                        'pandas>=0.23.4',
+                        'scikit-learn>=0.20.1',
+                        'shap',
+                        'matplotlib',
+                        'seaborn',
+                        'mlxtend',
+                        'click==6.7'])
