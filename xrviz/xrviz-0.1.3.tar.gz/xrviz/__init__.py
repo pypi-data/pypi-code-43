@@ -1,0 +1,5 @@
+from .dashboard import Dashboard as XrViz
+from .example import example
+from ._version import get_versions
+__version__ = get_versions()['version']
+del get_versions
