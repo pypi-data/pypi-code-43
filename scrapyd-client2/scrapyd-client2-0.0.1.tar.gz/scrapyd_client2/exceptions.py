@@ -1,0 +1,2 @@
+class ScrapydException(Exception):
+    pass
