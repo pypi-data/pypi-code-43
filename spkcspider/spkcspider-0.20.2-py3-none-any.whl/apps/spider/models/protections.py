@@ -1,0 +1,368 @@
+"""
+Protections
+namespace: spider_base
+
+"""
+
+__all__ = ["Protection", "AssignedProtection", "AuthToken"]
+
+import logging
+
+from django.db import models
+from django.conf import settings
+from django.utils.translation import gettext_lazy as _
+from django.views.decorators.debug import sensitive_variables
+from django.db.utils import IntegrityError
+from django.db import transaction
+
+from jsonfield import JSONField
+
+from spkcspider.constants import (
+    MAX_TOKEN_B64_SIZE, hex_size_of_bigid, TokenCreationError,
+    ProtectionType, ProtectionResult, ProtectionStateType
+)
+from spkcspider.utils.security import create_b64_id_token
+
+from ..validators import validator_token
+from ..protections import installed_protections, ProtectionList, PseudoPw
+from ..queryfilters import active_protections_q
+
+from .base import BaseSubUserComponentModel
+
+logger = logging.getLogger(__name__)
+
+
+_striptoken = getattr(settings, "TOKEN_SIZE", 30)*4//3
+# show 1/3 of token
+_striptoken = _striptoken-_striptoken//3
+
+
+class BaseQuerySet(models.QuerySet):
+    @sensitive_variables("kwargs")
+    def auth_query(self, request, required_passes=1, **kwargs):
+        initial_required_passes = required_passes
+        ret = ProtectionList()
+        max_result = 0
+        for item in self:
+            obj = None
+            _instant_fail = False
+            if hasattr(item, "protection"):  # is AssignedProtection
+                item, obj = item.protection, item
+                _instant_fail = (obj.state == ProtectionStateType.instant_fail)
+            # would be surprising if auth fails with required_passes == 0
+            # achievable by required_passes = amount of protections
+            if initial_required_passes == 0:
+                _instant_fail = False
+            result = item.auth(
+                request=request, obj=obj, query=self,
+                required_passes=initial_required_passes, **kwargs
+            )
+            if ProtectionType.password in item.ptype:
+                ret.uses_password = True
+            if _instant_fail:  # instant_fail does not reduce required_passes
+                if type(result) is not int:  # False or form
+                    # set limit unreachable
+                    required_passes = len(self)
+                else:
+                    if result > max_result:
+                        max_result = result
+            elif type(result) is int:
+                required_passes -= 1
+                if result > max_result:
+                    max_result = result
+            if result is not False:  # False will be not rendered
+                ret.media += item.installed_class.get_auth_media(result)
+                ret.append(ProtectionResult(result, item))
+        if ret.uses_password:
+            p = PseudoPw()
+            ret.insert(0, ProtectionResult(p, p))
+            ret.media += p.media
+        # after side effects like RandomFail with http404 errors
+        if (
+                request.GET.get("protection", "") == "false" and
+                initial_required_passes > 0
+           ):
+            return False
+        # don't require lower limit this way
+        #   against timing attacks
+        if required_passes <= 0:
+            return max_result
+        return ret
+
+
+class ProtectionQuerySet(BaseQuerySet):
+
+    def valid(self):
+        return self.filter(code__in=installed_protections)
+
+    def invalid(self):
+        return self.exclude(code__in=installed_protections)
+
+    def filter_protection_codes(self, protection_codes=None):
+        if protection_codes is not None:
+            return self.filter(
+                models.Q(code__in=protection_codes) |
+                models.Q(ptype__contains=ProtectionType.side_effects)
+            )
+        else:
+            return self
+
+    @sensitive_variables("kwargs")
+    def authall(self, request, required_passes=1,
+                ptype=ProtectionType.authentication,
+                protection_codes=None, **kwargs):
+        """
+            Usage: e.g. prerendering for login fields, because
+            no assigned object is available there is no config
+        """
+        query = self.filter(ptype__contains=ptype)
+
+        # before protection_codes, for not allowing users
+        # to manipulate required passes
+        if required_passes > 0:
+            # required_passes 1 and no protection means: login or token only
+            required_passes = max(min(required_passes, len(query)), 1)
+        else:
+            # only side_effects now
+            protection_codes = []
+
+        query = query.filter_protection_codes(protection_codes)
+
+        return query.order_by("code").auth_query(
+            request, required_passes=required_passes,
+            ptype=ptype
+        )
+
+
+# don't confuse with Protection objects used with add_protection
+# this is pure DB
+class Protection(models.Model):
+    objects = ProtectionQuerySet.as_manager()
+    # autogenerated, no choices required
+    code = models.SlugField(max_length=10, primary_key=True, db_index=False)
+    # protection abilities/requirements
+    ptype = models.CharField(
+        max_length=10, default=ProtectionType.authentication
+    )
+
+    @property
+    def installed_class(self):
+        return installed_protections[self.code]
+
+    def __str__(self):
+        return self.localize_name()
+
+    def __repr__(self):
+        return "<Protection: %s>" % self.__str__()
+
+    def localize_name(self):
+        if self.code not in installed_protections:
+            return self.code
+        return self.installed_class.localize_name(self.code)
+
+    def auth_localize_name(self):
+        if self.code not in installed_protections:
+            return self.code
+        return self.installed_class.auth_localize_name(self.code)
+
+    @sensitive_variables("kwargs")
+    def auth(self, request, obj=None, **kwargs):
+        # never ever allow authentication if not active
+        assert not obj or obj.state != ProtectionStateType.disabled
+        assert self.code in installed_protections, "invalid protection"
+        return self.installed_class.auth(
+            obj=obj, request=request, **kwargs.copy()
+        )
+
+    def get_form(self, prefix=None, **kwargs):
+        if prefix:
+            protection_prefix = "{}_protections_{{}}".format(prefix)
+        else:
+            protection_prefix = "protections_{}"
+        return self.installed_class(
+            protection=self, prefix=protection_prefix.format(self.code),
+            **kwargs
+        )
+
+    @classmethod
+    def get_forms(cls, ptype=None, **kwargs):
+        protections = cls.objects.valid()
+        if ptype:
+            protections = protections.filter(ptype__contains=ptype)
+        else:
+            ptype = ""
+        return map(lambda x: x.get_form(ptype=ptype, **kwargs), protections)
+
+
+def get_limit_choices_assigned_protection():
+    # django cannot serialize static, classmethods
+    index = models.Q(usercomponent__strength=10)
+    restriction = models.Q(
+        ~index, ptype__contains=ProtectionType.access_control
+    )
+    restriction |= models.Q(
+        index, ptype__contains=ProtectionType.authentication
+    )
+    return models.Q(code__in=Protection.objects.valid()) & restriction
+
+
+class AssignedProtectionQuerySet(BaseQuerySet):
+
+    def valid(self):
+        return self.filter(protection__code__in=installed_protections)
+
+    def invalid(self):
+        return self.exclude(
+            protection__code__in=installed_protections
+        )
+
+    def active(self):
+        return self.filter(active_protections_q)
+
+    def filter_protection_codes(self, protection_codes=None):
+        if protection_codes is not None:
+            return self.filter(
+                models.Q(protection__code__in=protection_codes) |
+                models.Q(
+                    protection__ptype__contains=ProtectionType.side_effects  # noqa: E501
+                )
+            )
+        else:
+            return self
+
+    def authall(
+        self, request, required_passes=1,
+        ptype=ProtectionType.access_control,
+        protection_codes=None, **kwargs
+    ):
+        query = self.filter(
+            active_protections_q,
+            protection__ptype__contains=ptype
+        )
+        # before protection_codes, for not allowing users
+        # to manipulate required passes
+        if required_passes > 0:
+            required_passes = max(
+                min(
+                    required_passes,
+                    len(query.exclude(
+                        state=ProtectionStateType.instant_fail
+                    ))
+                ), 1
+            )
+        elif ptype == ProtectionType.authentication:
+            # enforce a minimum of required_passes, if auth (e.g. index)
+            required_passes = 1
+        else:
+            required_passes = 0
+            # only side_effects now
+            protection_codes = []
+
+        return query.filter_protection_codes(
+            protection_codes
+        ).auth_query(
+            request, required_passes=required_passes, ptype=ptype
+        )
+
+
+class AssignedProtection(BaseSubUserComponentModel):
+    id = models.BigAutoField(primary_key=True)
+
+    objects = AssignedProtectionQuerySet.as_manager()
+    protection = models.ForeignKey(
+        Protection, on_delete=models.CASCADE, related_name="assigned",
+        limit_choices_to=get_limit_choices_assigned_protection
+    )
+    usercomponent = models.ForeignKey(
+        "spider_base.UserComponent", related_name="protections",
+        on_delete=models.CASCADE, editable=False
+    )
+    # data for protection
+    data = JSONField(default=dict, null=False)
+    created = models.DateTimeField(auto_now_add=True, editable=False)
+    modified = models.DateTimeField(auto_now=True, editable=False)
+    state = models.CharField(
+        max_length=1, choices=ProtectionStateType.as_choices(),
+        default=ProtectionStateType.enabled,
+        help_text=_(
+            "State of the protection."
+        )
+    )
+
+    class Meta:
+        unique_together = [("protection", "usercomponent")]
+
+    def __str__(self):
+        return "%s -> %s" % (
+            self.usercomponent, self.protection.localize_name()
+        )
+
+    def __repr__(self):
+        return "<Assigned: %s>" % (
+            self.__str__()
+        )
+
+
+class AuthTokenManager(models.Manager):
+
+    def create(self, *, token=None, **kwargs):
+        if token:
+            logger.warning("Should never specify token")
+        ret = self.model(**kwargs)
+        ret.save()
+        return ret
+
+
+class AuthToken(BaseSubUserComponentModel):
+    id = models.BigAutoField(primary_key=True, editable=False)
+    usercomponent = models.ForeignKey(
+        "spider_base.UserComponent", on_delete=models.CASCADE,
+        related_name="authtokens"
+    )
+    # -1=false,0=usercomponent,1-...=anchor
+    persist = models.BigIntegerField(blank=True, default=-1, db_index=True)
+    # brute force protection
+    #  16 = usercomponent.id in hexadecimal
+    #  +2 for seperators
+    token = models.CharField(
+        max_length=MAX_TOKEN_B64_SIZE+hex_size_of_bigid+2,
+        db_index=True, unique=True,
+        validators=[
+            validator_token
+        ]
+    )
+    referrer = models.ForeignKey(
+        "spider_base.ReferrerObject", on_delete=models.CASCADE,
+        related_name="tokens", blank=True, null=True
+    )
+    session_key = models.CharField(max_length=40, null=True)
+    extra = JSONField(default=dict, blank=True)
+    created = models.DateTimeField(auto_now_add=True, editable=False)
+
+    objects = AuthTokenManager()
+
+    def __str__(self):
+        return "{}...".format(self.token[:-_striptoken])
+
+    def initialize_token(self):
+        self.token = create_b64_id_token(
+            self.usercomponent.id, "_", getattr(settings, "TOKEN_SIZE", 30)
+        )
+
+    def save(self, *args, **kwargs):
+        start_token_creation = not self.token
+        if start_token_creation:
+            for i in range(0, 1000):
+                if i >= 999:
+                    raise TokenCreationError(
+                        'A possible infinite loop was detected'
+                    )
+                self.initialize_token()
+                try:
+                    with transaction.atomic():
+                        super().save(*args, **kwargs)
+                    break
+                except IntegrityError:
+                    pass
+        else:
+            super().save(*args, **kwargs)
