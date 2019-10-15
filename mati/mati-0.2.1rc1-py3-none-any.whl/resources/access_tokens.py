@@ -1,0 +1,55 @@
+import datetime as dt
+from dataclasses import dataclass
+from typing import ClassVar, Optional
+
+from ..auth import basic_auth_str, bearer_auth_str
+from .base import Resource
+
+
+@dataclass
+class AccessToken(Resource):
+    """
+    Based on: https://docs.getmati.com/#step-1-authentication
+    """
+
+    _endpoint: ClassVar[str] = '/oauth'
+
+    token: str
+    expires_at: dt.datetime
+    score: Optional[str]
+    user_id: Optional[str]
+
+    @classmethod
+    def create(cls, score: Optional[str] = None) -> 'AccessToken':
+        data = dict(grant_type='client_credentials')
+        endpoint = cls._endpoint
+        if score:
+            data['score'] = score
+            endpoint += '/token'
+        resp = cls._client.post(
+            endpoint,
+            data=data,
+            auth=basic_auth_str(*cls._client.basic_auth_creds),
+        )
+        try:
+            expires_in = resp['expiresIn']
+        except KeyError:
+            expires_in = resp['expires_in']
+        expires_at = dt.datetime.now() + dt.timedelta(seconds=expires_in)
+        try:
+            user_id = resp['payload']['user']['_id']
+        except KeyError:
+            user_id = None
+        return cls(
+            user_id=user_id,
+            token=resp['access_token'],
+            expires_at=expires_at,
+            score=score,
+        )
+
+    def __str__(self) -> str:
+        return bearer_auth_str(self.token)
+
+    @property
+    def expired(self) -> bool:
+        return self.expires_at < dt.datetime.now()
