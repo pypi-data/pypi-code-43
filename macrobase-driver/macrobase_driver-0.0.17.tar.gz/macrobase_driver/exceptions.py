@@ -1,0 +1,3 @@
+
+class ContextLockedException(Exception):
+    pass
