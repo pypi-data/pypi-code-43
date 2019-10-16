@@ -1,0 +1,5 @@
+name = 'godefine'
+version = '1.0.8'
+author = 'suzhen'
+author_email = 'suzhenandroid@gmail.com'
+description = 'preprocess marcos tool'
