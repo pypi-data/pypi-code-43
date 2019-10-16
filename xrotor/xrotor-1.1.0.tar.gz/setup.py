@@ -1,0 +1,150 @@
+# -*- coding: utf-8 -*-
+#   Copyright (c) 2018 D. de Vries
+#
+#   This file is part of XRotor.
+#
+#   XRotor is free software: you can redistribute it and/or modify
+#   it under the terms of the GNU General Public License as published by
+#   the Free Software Foundation, either version 3 of the License, or
+#   (at your option) any later version.
+#
+#   XRotor is distributed in the hope that it will be useful,
+#   but WITHOUT ANY WARRANTY; without even the implied warranty of
+#   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#   GNU General Public License for more details.
+#
+#   You should have received a copy of the GNU General Public License
+#   along with XRotor.  If not, see <https://www.gnu.org/licenses/>.
+import os
+import platform
+import subprocess
+import sys
+
+from setuptools import setup
+from setuptools.extension import Extension
+from setuptools.command.build_ext import build_ext
+
+version = '1.1.0'
+
+options = {k: 'OFF' for k in ['--opt', '--debug', '--cuda']}
+for flag in options.keys():
+    if flag in sys.argv:
+        options[flag] = 'ON'
+        sys.argv.remove(flag)
+
+# Command line flags forwarded to CMake
+cmake_cmd_args = []
+for f in sys.argv:
+    if f.startswith('-D'):
+        cmake_cmd_args.append(f)
+        sys.argv.remove(f)
+
+
+class CMakeExtension(Extension):
+
+    def __init__(self, name, cmake_target=None, cmake_list_dir='.', **kwargs):
+        super().__init__(name, sources=[], **kwargs)
+        self.cmake_lists_dir = os.path.abspath(cmake_list_dir)
+        self.cmake_target = cmake_target
+
+
+class CMakeBuild(build_ext):
+
+    def build_extensions(self):
+        # Ensure that CMake is present and working
+        try:
+            out = subprocess.check_output(['cmake', '--version'])
+        except OSError:
+            raise RuntimeError('Cannot find CMake executable')
+
+        for ext in self.extensions:
+            extdir = os.path.abspath(os.path.dirname(self.get_ext_fullpath(ext.name)))
+            cfg = 'Debug' if options['--debug'] == 'ON' else 'Release'
+
+            cmake_args = [
+                '-DCMAKE_BUILD_TYPE=%s' % cfg,
+                # Ask CMake to place the resulting library in the directory
+                # containing the extension
+                '-DCMAKE_LIBRARY_OUTPUT_DIRECTORY_{}={}'.format(cfg.upper(), extdir),
+                # Other intermediate static libraries are placed in a
+                # temporary build directory instead
+                '-DCMAKE_ARCHIVE_OUTPUT_DIRECTORY_{}={}'.format(cfg.upper(), self.build_temp),
+                # Hint CMake to use the same Python executable that
+                # is launching the build, prevents possible mismatching if
+                # multiple versions of Python are installed
+                '-DPYTHON_EXECUTABLE={}'.format(sys.executable),
+                # Add other project-specific CMake arguments if needed
+                # ...
+            ]
+
+            # We can handle some platform-specific settings at our discretion
+            if platform.system() == 'Windows':
+                plat = ('x64' if platform.architecture()[0] == '64bit' else 'Win32')
+                cmake_args += [
+                    # These options are likely to be needed under Windows
+                    '-DCMAKE_WINDOWS_EXPORT_ALL_SYMBOLS=TRUE',
+                    '-DCMAKE_RUNTIME_OUTPUT_DIRECTORY_{}={}'.format(cfg.upper(), extdir),
+                ]
+                # Assuming that Visual Studio and MinGW are supported compilers
+                if self.compiler.compiler_type == 'msvc':
+                    cmake_args += [
+                        '-DCMAKE_GENERATOR_PLATFORM=%s' % plat,
+                    ]
+                else:
+                    cmake_args += [
+                        '-G', 'MinGW Makefiles',
+                    ]
+
+            cmake_args += cmake_cmd_args
+
+            if ext.cmake_target is not None:
+                cmake_args += ['--target', ext.cmake_target]
+
+            print(cmake_args)
+
+            if not os.path.exists(self.build_temp):
+                os.makedirs(self.build_temp)
+
+            # Config and build the extension
+            subprocess.check_call(['cmake', ext.cmake_lists_dir] + cmake_args,
+                                  cwd=self.build_temp)
+            subprocess.check_call(['cmake', '--build', '.', '--config', cfg],
+                                  cwd=self.build_temp)
+
+
+def readme():
+    with open('README.md') as f:
+        return f.read()
+
+
+setup(
+    name='xrotor',
+    version=version,
+    description='Stripped down version of XROTOR as compiled python module ',
+    long_description=readme(),
+    long_description_content_type='text/markdown',
+    classifiers=[
+        'Development Status :: 3 - Alpha',
+        'Intended Audience :: Science/Research',
+        'License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)',
+        'Natural Language :: English',
+        'Operating System :: MacOS :: MacOS X',
+        'Operating System :: POSIX :: Linux',
+        'Operating System :: Microsoft :: Windows',
+        'Programming Language :: Fortran',
+        'Programming Language :: Python :: 3 :: Only',
+        'Topic :: Scientific/Engineering',
+    ],
+    keywords='xrotor propeller performance analysis',
+    url='https://github.com/daniel-de-vries/xrotor-python',
+    download_url='https://github.com/daniel-de-vries/xrotor-python/tarball/' + version,
+    author='Daniël de Vries',
+    author_email='contact@daniel-de-vries.com',
+    license='GNU General Public License v3 or later (GPLv3+)',
+    packages=['xrotor'],
+    # package_dir={'': 'src'},
+    ext_modules=[CMakeExtension('xrotor.xrotor')],
+    cmdclass={'build_ext': CMakeBuild},
+    install_requires=['numpy', 'scipy'],
+    zip_save=False
+)
