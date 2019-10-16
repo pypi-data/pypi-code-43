@@ -1,0 +1,2 @@
+"""cubicweb-simplefacet application package
+"""
