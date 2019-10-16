@@ -1,0 +1,99 @@
+from contextlib import contextmanager
+import os
+import pytest
+
+from buildstream._exceptions import LoadError, LoadErrorReason
+from buildstream._project import Project
+from buildstream._loader import MetaElement
+from buildstream._loader.loader import _NO_PROGRESS
+
+from tests.testutils import dummy_context
+
+
+DATA_DIR = os.path.join(
+    os.path.dirname(os.path.realpath(__file__)),
+    'loader',
+)
+
+
+@contextmanager
+def make_loader(basedir):
+    with dummy_context() as context:
+        project = Project(basedir, context)
+        yield project.loader
+
+
+##############################################################
+#  Basics: Test behavior loading the simplest of projects    #
+##############################################################
+@pytest.mark.datafiles(os.path.join(DATA_DIR, 'onefile'))
+def test_one_file(datafiles):
+
+    basedir = str(datafiles)
+    with make_loader(basedir) as loader:
+        element = loader.load(['elements/onefile.bst'], _NO_PROGRESS)[0]
+
+        assert isinstance(element, MetaElement)
+        assert element.kind == 'pony'
+
+
+@pytest.mark.datafiles(os.path.join(DATA_DIR, 'onefile'))
+def test_missing_file(datafiles):
+
+    basedir = str(datafiles)
+    with make_loader(basedir) as loader, pytest.raises(LoadError) as exc:
+        loader.load(['elements/missing.bst'], _NO_PROGRESS)
+
+    assert exc.value.reason == LoadErrorReason.MISSING_FILE
+
+
+@pytest.mark.datafiles(os.path.join(DATA_DIR, 'onefile'))
+def test_invalid_reference(datafiles):
+
+    basedir = str(datafiles)
+    with make_loader(basedir) as loader, pytest.raises(LoadError) as exc:
+        loader.load(['elements/badreference.bst'], _NO_PROGRESS)
+
+    assert exc.value.reason == LoadErrorReason.INVALID_YAML
+
+
+@pytest.mark.datafiles(os.path.join(DATA_DIR, 'onefile'))
+def test_invalid_yaml(datafiles):
+
+    basedir = str(datafiles)
+    with make_loader(basedir) as loader, pytest.raises(LoadError) as exc:
+        loader.load(['elements/badfile.bst'], _NO_PROGRESS)
+
+    assert exc.value.reason == LoadErrorReason.INVALID_YAML
+
+
+@pytest.mark.datafiles(os.path.join(DATA_DIR, 'onefile'))
+def test_fail_fullpath_target(datafiles):
+
+    basedir = str(datafiles)
+    fullpath = os.path.join(basedir, 'elements', 'onefile.bst')
+
+    with make_loader(basedir) as loader, pytest.raises(LoadError) as exc:
+        loader.load([fullpath], _NO_PROGRESS)
+
+    assert exc.value.reason == LoadErrorReason.INVALID_DATA
+
+
+@pytest.mark.datafiles(os.path.join(DATA_DIR, 'onefile'))
+def test_invalid_key(datafiles):
+
+    basedir = str(datafiles)
+    with make_loader(basedir) as loader, pytest.raises(LoadError) as exc:
+        loader.load(['elements/invalidkey.bst'], _NO_PROGRESS)
+
+    assert exc.value.reason == LoadErrorReason.INVALID_DATA
+
+
+@pytest.mark.datafiles(os.path.join(DATA_DIR, 'onefile'))
+def test_invalid_directory_load(datafiles):
+
+    basedir = str(datafiles)
+    with make_loader(basedir) as loader, pytest.raises(LoadError) as exc:
+        loader.load(['elements/'], _NO_PROGRESS)
+
+    assert exc.value.reason == LoadErrorReason.LOADING_DIRECTORY
