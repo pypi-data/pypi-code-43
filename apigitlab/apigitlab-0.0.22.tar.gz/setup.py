@@ -1,0 +1,11 @@
+from setuptools import setup, find_packages
+from os.path import join, dirname
+setup(
+    name='apigitlab',
+    version='0.0.22',
+    packages=find_packages(),
+    #long_description=open(join(dirname(__file__), 'Readme.md')).read(),
+    install_requires=[
+    'requests'
+    ]
+)
