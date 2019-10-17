@@ -1,0 +1,30 @@
+# -*- coding: utf-8 -*-
+from distutils.core import setup
+
+packages = \
+['apiblueprint_view',
+ 'apiblueprint_view.templatetags',
+ 'apiblueprint_view.tests']
+
+package_data = \
+{'': ['*'], 'apiblueprint_view': ['templates/api_docs/*']}
+
+install_requires = \
+['Django>=1.11,<2.3', 'draughtsman==0.1.0', 'markdown2>=2.0.0,<3.0.0']
+
+setup_kwargs = {
+    'name': 'django-apiblueprint-view',
+    'version': '2.1.1',
+    'description': 'Render API Blueprints on-the-fly using Django templates',
+    'long_description': "# django-apiblueprint-view\n\n[![Build Status](https://travis-ci.org/chris48s/django-apiblueprint-view.svg?branch=master)](https://travis-ci.org/chris48s/django-apiblueprint-view)\n[![Coverage Status](https://coveralls.io/repos/github/chris48s/django-apiblueprint-view/badge.svg?branch=master)](https://coveralls.io/github/chris48s/django-apiblueprint-view?branch=master)\n![PyPI Version](https://img.shields.io/pypi/v/django-apiblueprint-view.svg)\n![License](https://img.shields.io/pypi/l/django-apiblueprint-view.svg)\n![Python Support](https://img.shields.io/pypi/pyversions/django-apiblueprint-view.svg)\n![Django Support](https://img.shields.io/pypi/djversions/django-apiblueprint-view.svg)\n![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)\n\nRender [API Blueprints](https://apiblueprint.org/) on-the-fly using Django templates\n\n## Installation\n\n1. `django-apiblueprint-view` uses the [Drafter](https://github.com/apiaryio/drafter) C library for API Blueprint parsing. Install it using:\n\n```\nwget https://github.com/apiaryio/drafter/releases/download/v3.2.7/drafter-v3.2.7.tar.gz\ntar xvzf drafter-v3.2.7.tar.gz\ncd drafter-v3.2.7\n./configure --shared\nmake libdrafter\nsudo cp build/out/Release/lib.target/libdrafter.so /usr/lib/libdrafter.so\nsudo cp src/drafter.h /usr/include/drafter/drafter.h\n```\n\n2. `pip install django-apiblueprint-view`\n\n3. Add to `INSTALLED_APPS` in django settings:\n\n```python\nINSTALLED_APPS = [\n    ...\n    'apiblueprint_view',\n]\n```\n\n## Usage\n\n```python\nfrom apiblueprint_view.views import ApiBlueprintView\n\nurlpatterns = [\n    url(r'^docs/$', ApiBlueprintView.as_view(blueprint='/path/to/blueprint.apibp')),\n]\n```\n\n## Styling\n\n### Custom HTML Template\n\nDefine a custom base template. It must include the tag\n\n```\n{% include 'api_docs/docs_parent.html' %}\n```\n\nPass it into `ApiBlueprintView.as_view()` as a parameter.\n\n```python\nfrom apiblueprint_view.views import ApiBlueprintView\n\nurlpatterns = [\n    url(r'^docs/$', ApiBlueprintView.as_view(\n        blueprint='/path/to/blueprint.apibp',\n        template_name='my_base_template.html'\n    )),\n]\n```\n\n### Custom CSS\n\n`ApiBlueprintView.as_view()` may accept a `styles` dictionary describing custom CSS classes which should be attached to rendered HTML tags. For example:\n\n```python\nfrom apiblueprint_view.views import ApiBlueprintView\n\nurlpatterns = [\n    url(r'^docs/$', ApiBlueprintView.as_view(\n        blueprint='/path/to/blueprint.apibp',\n        template_name='my_base_template.html',\n        styles={\n            'action': {'class': 'foo bar'},\n            'method': {'class': 'baz'}\n        }\n    )),\n]\n```\n\nThe following keys are valid. All keys are optional:\n\n* `'action'`: Container `<div>` for an API action\n* `'action_transaction'`: Container `<div>` for a HTTP transaction (request and response)\n* `'action_request'`: Container `<div>` for a HTTP request\n* `'action_response'`: Container `<div>` for a HTTP response\n* `'action_schema'`: Container `<div>` for a HTTP request or response schema\n* `'action_headers'`: Container `<div>` for HTTP request or response headers\n* `'action_body'`: Container `<div>` for a HTTP request or response body\n* `'action_example'`: Container `<div>` for an API action example URL\n* `'description'`: Container `<div>` for some text describing an action, resource, request, response, etc\n* `'parameters'`: Container `<div>` for a list of parameters\n* `'method'`: Generic `<span>` containing an HTTP method\n* `'method_CONNECT'`: `<span>` containing the text `CONNECT`\n* `'method_DELETE'`: `<span>` containing the text `DELETE`\n* `'method_GET'`: `<span>` containing the text `GET`\n* `'method_HEAD'`: `<span>` containing the text `HEAD`\n* `'method_OPTIONS'`: `<span>` containing the text `OPTIONS`\n* `'method_PATCH'`: `<span>` containing the text `PATCH`\n* `'method_POST'`: `<span>` containing the text `POST`\n* `'method_PUT'`: `<span>` containing the text `PUT`\n* `'method_TRACE'`: `<span>` containing the text `TRACE`\n* `'resource'`: Container `<div>` for an API resource\n* `'resource_group'`: Container `<div>` for an API resource group\n\n[Highlight.js](https://highlightjs.org/) can be used to add syntax highlighting\n\n### Including Files\n\nYou can include other files in your blueprint by using an include directive with a path to the included file relative to the current file's directory. Included files can include other files, so be careful of circular references.\n\n```\n<!-- include(filename.md) -->\n```\n\nThis syntax is not a part of the API Blueprint spec, but is also supported in some other tools e.g: [aglio](https://github.com/danielgtaylor/aglio#including-files).\n\nThe include directive has the potential to introduce remote file inclusion or directory traversal vulnerabilities if your application renders user-supplied content. There are a couple of settings to help mitigate this. Set `APIBP_PROCESS_INCLUDES = False` in your django settings to completely ignore include directives (the default is `True`). There is also a whitelist of allowed file types to include. The default whitelist is `['.md', '.apibp', '.json']` but this can be overridden by setting `APIBP_INCLUDE_WHITELIST` to a list of allowed extensions in your django settings.\n",
+    'author': 'chris48s',
+    'author_email': None,
+    'url': 'https://github.com/chris48s/django-apiblueprint-view',
+    'packages': packages,
+    'package_data': package_data,
+    'install_requires': install_requires,
+    'python_requires': '>=3.5,<4.0',
+}
+
+
+setup(**setup_kwargs)
