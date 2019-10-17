@@ -1,0 +1,4 @@
+from gbvision.net.async_stream_receiver import AsyncStreamReceiver
+from .tcp_stream_receiver import TCPStreamReceiver
+
+AsyncTCPStreamReceiver = AsyncStreamReceiver.create_type(TCPStreamReceiver)
