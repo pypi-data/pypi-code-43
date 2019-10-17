@@ -1,0 +1,1 @@
+from alexber.reqsync.app import conf
