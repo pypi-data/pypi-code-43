@@ -1,0 +1,8 @@
+CONTEXT_MOUNT_CODE = "/plx-context/code"
+CONTEXT_MOUNT_BUILD = "/plx-context/build"
+CONTEXT_MOUNT_AUTH = "/plx-context/.auth"
+CONTEXT_MOUNT_OUTPUTS = "/plx-context/outputs"
+CONTEXT_MOUNT_LOGS = "/plx-context/logs"
+CONTEXT_MOUNT_ARTIFACTS = "/plx-context/artifacts/{}"
+CONTEXT_MOUNT_SHM = "/dev/shm"
+CONTEXT_MOUNT_DOCKER = "/var/run/docker.sock"
