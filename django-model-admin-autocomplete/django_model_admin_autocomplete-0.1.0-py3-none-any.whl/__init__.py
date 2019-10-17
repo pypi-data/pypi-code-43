@@ -1,0 +1,1 @@
+from .mixins import AutoCompleteModelMixin as ModelAdminAutoComplete
