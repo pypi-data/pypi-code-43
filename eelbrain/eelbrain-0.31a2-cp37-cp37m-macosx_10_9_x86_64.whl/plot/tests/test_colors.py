@@ -1,0 +1,98 @@
+# Author: Christian Brodbeck <christianbrodbeck@nyu.edu>
+from numpy.testing import assert_array_equal
+import pytest
+
+from eelbrain import datasets, plot
+from eelbrain._colorspaces import SymmetricNormalize
+from eelbrain._wxgui.testing import hide_plots
+
+
+def test_generate_colors():
+    "Test functions for assigning colors to cells"
+    ds = datasets.get_uv()
+    cells_1 = ('A', 'B')
+    cells_2 = ('a', 'b', 'c')
+
+    colors = plot.colors_for_oneway(cells_1)
+    assert len(colors) == len(cells_1)
+
+    colors = plot.colors_for_twoway(cells_1, cells_2)
+    assert len(colors) == len(cells_1) * len(cells_2)
+
+    colors = plot.colors_for_twoway(cells_2, cells_1)
+    assert len(colors) == len(cells_1) * len(cells_2)
+
+    # colors_for_categorial()
+    f = ds['A']
+    colors = plot.colors_for_categorial(f)
+    for cell in f.cells:
+        assert cell in colors
+
+    i = ds.eval("A%B")
+    colors = plot.colors_for_categorial(i)
+    for cell in i.cells:
+        assert cell in colors
+
+    i = ds.eval("A%B%rm")
+    colors = plot.colors_for_categorial(i)
+    for cell in i.cells:
+        assert cell in colors
+
+    with pytest.raises(TypeError):
+        plot.colors_for_categorial("A%B")
+
+
+def test_generate_colormaps():
+    cmap = plot.two_step_colormap('black', 'red', name='oneside')
+    assert not cmap.symmetric
+    cmap = plot.two_step_colormap('black', 'red', 'transparent', 'blue', 'black', name='red-blue')
+    assert cmap.symmetric
+    cmap = plot.two_step_colormap('black', (1, 0, 0.3), 'transparent', (0.3, 0, 1), 'black', name='red-blue-2')
+    assert cmap.symmetric
+
+
+@hide_plots
+def test_plot_colorbar():
+    "Test plot.ColorBar()"
+    p = plot.ColorBar('jet', -1, 1)
+    p.close()
+    p = plot.ColorBar('jet', -1, 1, orientation='vertical')
+    p.close()
+    p = plot.ColorBar('jet', -1, 1, label_position='top')
+    p.close()
+    p = plot.ColorBar('jet', -1, 1, orientation='vertical', label_position='right')
+    p.close()
+    p = plot.ColorBar('xpolar-a', -3, 3, clipmin=0, unit='t')
+    p.close()
+
+    norm = SymmetricNormalize(0.5, 1)
+    p = plot.ColorBar('xpolar', norm, unit='ms', ticks=(-1, 0, 1))
+    assert_array_equal(p._axes[0].get_xticks(), [0, 0.5, 1])
+    p.close()
+
+    # soft-thresholded colormap
+    cmap = plot.soft_threshold_colormap('xpolar-a', 0.2, 2.0)
+    p = plot.ColorBar(cmap)
+    p.close()
+
+
+@hide_plots
+def test_plot_colors():
+    "Test plotting color schemes"
+    cells_1 = ('A', 'B')
+    cells_2 = ('a', 'b', 'c')
+
+    colors = plot.colors_for_oneway(cells_1)
+    p = plot.ColorList(colors)
+    w0, h0 = p.figure.get_size_inches()
+    p.close()
+
+    p = plot.ColorList(colors, labels={'A': 'A'*50, 'B': 'Bbb'})
+    w, h = p.figure.get_size_inches()
+    assert h == h0
+    assert w > w0
+    p.close()
+
+    colors = plot.colors_for_twoway(cells_1, cells_2)
+    p = plot.ColorList(colors)
+    p.close()
