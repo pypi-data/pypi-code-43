@@ -1,0 +1,97 @@
+# -*- coding: utf-8 -*-
+# ------------------------------------------------------------------------------
+#
+#   Copyright 2018-2019 Fetch.AI Limited
+#
+#   Licensed under the Apache License, Version 2.0 (the "License");
+#   you may not use this file except in compliance with the License.
+#   You may obtain a copy of the License at
+#
+#       http://www.apache.org/licenses/LICENSE-2.0
+#
+#   Unless required by applicable law or agreed to in writing, software
+#   distributed under the License is distributed on an "AS IS" BASIS,
+#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#   See the License for the specific language governing permissions and
+#   limitations under the License.
+#
+# ------------------------------------------------------------------------------
+
+"""Implementation of the parser for configuration file."""
+
+import inspect
+import json
+import os
+import re
+from pathlib import Path
+from typing import TextIO, Type, TypeVar, Generic
+
+import jsonschema
+import yaml
+from jsonschema import Draft4Validator
+from yaml import SafeLoader
+
+from aea.configurations.base import AgentConfig, SkillConfig, ConnectionConfig, ProtocolConfig
+
+_CUR_DIR = os.path.dirname(inspect.getfile(inspect.currentframe()))  # type: ignore
+_SCHEMAS_DIR = os.path.join(_CUR_DIR, "schemas")
+
+T = TypeVar('T', AgentConfig, SkillConfig, ConnectionConfig, ProtocolConfig)
+
+
+class ConfigLoader(Generic[T]):
+    """This class implement parsing, serialization and validation functionalities for the 'aea' configuration files."""
+
+    def __init__(self, schema_filename: str, configuration_type: Type[T]):
+        """Initialize the parser for configuration files."""
+        self.schema = json.load(open(os.path.join(_SCHEMAS_DIR, schema_filename)))
+        root_path = "file://{}{}".format(Path(_SCHEMAS_DIR).absolute(), os.path.sep)
+        self.resolver = jsonschema.RefResolver(root_path, self.schema)
+        self.validator = Draft4Validator(self.schema, resolver=self.resolver)
+        self.configuration_type = configuration_type  # type: Type[T]
+
+    def load(self, fp: TextIO) -> T:
+        """
+        Load an agent configuration file.
+
+        :param fp: the file pointer to the configuration file
+        :return: the configuration object.
+        :raises
+        """
+        configuration_file_json = yaml.safe_load(fp)
+        self.validator.validate(instance=configuration_file_json)
+        return self.configuration_type.from_json(configuration_file_json)
+
+    def dump(self, configuration: T, fp: TextIO) -> None:
+        """Dump a configuration.
+
+        :param configuration: the configuration to be dumped.
+        :param fp: the file pointer to the configuration file
+        :return: None
+        """
+        result = configuration.json
+        self.validator.validate(instance=result)
+        yaml.safe_dump(result, fp)
+
+
+def _config_loader():
+    envvar_matcher = re.compile(r'\${([^}^{]+)\}')
+
+    def envvar_constructor(loader, node):
+        """Extract the matched value, expand env variable, and replace the match."""
+        node_value = node.value
+        match = envvar_matcher.match(node_value)
+        env_var = match.group()[2:-1]
+
+        # check for defaults
+        var_name, default_value = env_var.split(":")
+        var_name = var_name.strip()
+        default_value = default_value.strip()
+        var_value = os.getenv(var_name, default_value)
+        return var_value + node_value[match.end():]
+
+    yaml.add_implicit_resolver('!envvar', envvar_matcher, None, SafeLoader)
+    yaml.add_constructor('!envvar', envvar_constructor, SafeLoader)
+
+
+_config_loader()
