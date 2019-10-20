@@ -1,0 +1,6 @@
+"""Resource."""
+
+
+class TypedResource:
+
+    ...
