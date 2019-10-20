@@ -1,0 +1,1 @@
+DEV_URL = 'https://bioinformatika.pef.mendelu.cz/api'
