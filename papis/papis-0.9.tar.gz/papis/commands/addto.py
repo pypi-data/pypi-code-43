@@ -1,0 +1,122 @@
+"""
+This command adds files to existing papis documents in some library.
+
+For instance imagine you have two pdf files, ``a.pdf`` and ``b.pdf``
+that you want to add to a document that matches with the query string
+``einstein photon definition``, then you would use
+
+::
+
+    papis addto 'einstein photon definition' -f a.pdf -f b.pdf
+
+notice that we repeat two times the flag ``-f``, this is important.
+
+Cli
+^^^
+.. click:: papis.commands.addto:cli
+    :prog: papis addto
+"""
+from string import ascii_lowercase
+import os
+import shutil
+import papis.pick
+import papis.utils
+import papis.document
+import papis.git
+import papis.config
+import papis.commands.add
+import logging
+import papis.cli
+import click
+import papis.strings
+
+
+def run(document, filepaths, git=False):
+    logger = logging.getLogger('addto')
+    g = papis.utils.create_identifier(ascii_lowercase)
+    string_append = ''
+    for i in range(len(document.get_files())):
+        string_append = next(g)
+
+    new_file_list = []
+    for i in range(len(filepaths)):
+        in_file_path = filepaths[i]
+
+        if not os.path.exists(in_file_path):
+            raise Exception("{} not found".format(in_file_path))
+
+        # Rename the file in the staging area
+        new_filename = papis.utils.clean_document_name(
+            papis.commands.add.get_file_name(
+                papis.document.to_dict(document),
+                in_file_path,
+                suffix=string_append
+            )
+        )
+        new_file_list.append(new_filename)
+
+        endDocumentPath = os.path.join(
+            document.get_main_folder(),
+            new_filename
+        )
+        string_append = next(g)
+
+        # Check if the absolute file path is > 255 characters
+        if len(os.path.abspath(endDocumentPath)) >= 255:
+            logger.warning(
+                'Length of absolute path is > 255 characters. '
+                'This may cause some issues with some pdf viewers'
+            )
+
+        if os.path.exists(endDocumentPath):
+            logger.warning(
+                "%s already exists, ignoring..." % endDocumentPath
+            )
+            continue
+        logger.info(
+            "[CP] '%s' to '%s'" %
+            (in_file_path, endDocumentPath)
+        )
+        shutil.copy(in_file_path, endDocumentPath)
+
+    if not "files" in document.keys():
+        document["files"] = []
+    document['files'] += new_file_list
+    document.save()
+    papis.database.get().update(document)
+    if git:
+        for r in new_file_list + [document.get_info_file()]:
+            papis.git.add(document.get_main_folder(), r)
+        papis.git.commit(
+            document.get_main_folder(),
+            "Add new files to '{}'".format(papis.document.describe(document)))
+
+
+@click.command("addto")
+@click.help_option('--help', '-h')
+@papis.cli.query_option()
+@papis.cli.git_option(help="Add and commit files")
+@click.option(
+    "-f", "--files",
+    help="File fullpaths to documents",
+    multiple=True,
+    type=click.Path(exists=True))
+@click.option(
+    "--file-name",
+    help="File name for the document (papis format)",
+    default=None)
+def cli(query, git, files, file_name):
+    """Add files to an existing document"""
+    documents = papis.database.get().query(query)
+    logger = logging.getLogger('cli:addto')
+    if not documents:
+        logger.warning(papis.strings.no_documents_retrieved_message)
+        return
+    document = papis.pick.pick_doc(documents)
+    if not document:
+        return
+
+    if file_name is not None:  # Use args if set
+        papis.config.set("add-file-name", file_name)
+
+    return run(document, files, git=git)
