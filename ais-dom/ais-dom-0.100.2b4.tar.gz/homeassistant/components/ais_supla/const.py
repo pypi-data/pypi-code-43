@@ -1,0 +1,5 @@
+"""Constants for supla."""
+DOMAIN = "ais_supla"
+CONF_SERVER = "server"
+CONF_CHANNELS = "channels"
+CONF_SERVERS = "servers"
