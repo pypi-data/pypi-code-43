@@ -1,0 +1,13 @@
+"""
+My first python function that prints recursively arrays nested in arrays
+"""
+def print_recursively_lists(the_var, indent_level):
+  for item in the_var:
+    if isinstance(item, list):
+      print_recursively_lists(item, indent_level * 2)
+    else:
+      for indent_step in range(indent_level):
+        print("\t", end="")
+      print(item)
+
+print_recursively_lists([1, 2, [3, 4, [5, 6]]], 2)
