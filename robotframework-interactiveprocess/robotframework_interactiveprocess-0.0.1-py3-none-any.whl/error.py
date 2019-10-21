@@ -1,0 +1,2 @@
+class ErrorProcess(Exception):
+    pass
