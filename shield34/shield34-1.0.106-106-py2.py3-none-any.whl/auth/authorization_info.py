@@ -1,0 +1,3 @@
+class AuthorizationInfo():
+    isAuthorized = False
+
