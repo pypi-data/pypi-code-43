@@ -1,0 +1,92 @@
+# MIT License
+#
+# Copyright (c) 2018-2019 Red Hat, Inc.
+
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+import pytest
+import sys
+from flexmock import flexmock
+
+from packit.exceptions import PackitException
+from packit.utils import (
+    get_namespace_and_repo_name,
+    git_remote_url_to_https_url,
+    run_command,
+    get_packit_version,
+)
+from pkg_resources import DistributionNotFound, Distribution
+
+
+@pytest.mark.parametrize(
+    "url,namespace,repo_name",
+    [
+        ("https://github.com/org/name", "org", "name"),
+        ("https://github.com/org/name/", "org", "name"),
+        ("https://github.com/org/name.git", "org", "name"),
+        ("git@github.com:org/name", "org", "name"),
+        ("git@github.com:org/name.git", "org", "name"),
+    ],
+)
+def test_get_ns_repo(url, namespace, repo_name):
+    assert get_namespace_and_repo_name(url) == (namespace, repo_name)
+
+
+def test_get_ns_repo_exc():
+    url = "git@github.com"
+    with pytest.raises(PackitException) as ex:
+        get_namespace_and_repo_name(url)
+    msg = f"Invalid URL format, can't obtain namespace and repository name: {url}"
+    assert msg in str(ex.value)
+
+
+@pytest.mark.parametrize(
+    "inp,ok",
+    [
+        ("/", ""),
+        (None, ""),
+        (
+            "https://github.com/packit-service/packit",
+            "https://github.com/packit-service/packit",
+        ),
+        ("git@github.com:packit-service/ogr", "https://github.com/packit-service/ogr"),
+        (
+            "ssh://ttomecek@pkgs.fedoraproject.org/rpms/alot.git",
+            "https://pkgs.fedoraproject.org/rpms/alot.git",
+        ),
+    ],
+)
+def test_remote_to_https(inp, ok):
+    assert git_remote_url_to_https_url(inp) == ok
+
+
+def test_run_command_w_env():
+    run_command(["bash", "-c", "env | grep PATH"], env={"X": "Y"})
+
+
+def test_get_packit_version_not_installed():
+    flexmock(sys.modules["packit.utils"]).should_receive("get_distribution").and_raise(
+        DistributionNotFound
+    )
+    assert get_packit_version() == "NOT_INSTALLED"
+
+
+def test_get_packit_version():
+    flexmock(Distribution).should_receive("version").and_return("0.1.0")
+    assert get_packit_version() == "0.1.0"
