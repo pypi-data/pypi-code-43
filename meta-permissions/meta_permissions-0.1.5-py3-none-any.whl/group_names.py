@@ -1,0 +1,28 @@
+from edc_permissions.constants import (
+    ADMINISTRATION,
+    AE,
+    AE_REVIEW,
+    EVERYONE,
+    CLINIC,
+    PII,
+    LAB,
+    RANDO,
+    PII_VIEW,
+    SCREENING,
+    TMG,
+    UNBLINDING_REVIEWERS,
+    UNBLINDING_REQUESTORS,
+)
+
+# commonly grouped like this ..
+CLINIC_USER_GROUPS = [
+    ADMINISTRATION,
+    EVERYONE,
+    SCREENING,
+    CLINIC,
+    PII,
+    RANDO,
+    AE_REVIEW,
+]
+LAB_USER_GROUPS = [ADMINISTRATION, EVERYONE, LAB, PII_VIEW]
+TMG_USER_GROUPS = [ADMINISTRATION, EVERYONE, AE_REVIEW]
