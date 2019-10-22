@@ -1,0 +1,18 @@
+from generate_graphene.generate_graphene import GenerateGraphene
+
+generate_graphene = GenerateGraphene()
+
+# shortcuts
+register_graphql_objects = generate_graphene.register_graphql_objects
+set_mutation = generate_graphene.set_mutation
+register_serializer = generate_graphene.register_serializer
+register_model = generate_graphene.register_model
+register_object_type = generate_graphene.register_object_type
+exclude_single_field = generate_graphene.exclude_single_field
+exclude_list_field = generate_graphene.exclude_list_field
+exclude_create_field = generate_graphene.exclude_create_field
+exclude_update_field = generate_graphene.exclude_update_field
+exclude_delete_field = generate_graphene.exclude_delete_field
+get_object_type = generate_graphene.get_object_type
+get_model_serializer = generate_graphene.get_model_serializer
+get_mutation_class = generate_graphene.get_mutation_class
