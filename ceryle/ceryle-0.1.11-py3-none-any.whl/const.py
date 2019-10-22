@@ -1,0 +1,7 @@
+DEFAULT_TASK_FILE = 'CERYLE'
+CERYLE_DIR = '.ceryle'
+CERYLE_TASK_DIR = 'tasks'
+CERYLE_TASK_EXT = '.ceryle'
+CERYLE_EX_DIR = 'extensions'
+CERYLE_EX_FILE_EXT = '.py'
+CERYLE_RUN_CACHE_FILENAME = 'last-execution'
