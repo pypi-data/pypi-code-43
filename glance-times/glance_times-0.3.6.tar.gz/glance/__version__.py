@@ -1,0 +1,10 @@
+
+__title__ = 'glance-times'
+__description__ = 'Who will watch the watchman? Glance can.'
+__url__ = 'https://github.com/mrice88/glance'
+__download_url__ = 'https://github.com/mrice88/glance/archive/master.zip'
+__version__ = '0.3.6'
+__author__ = 'Mark Rice'
+__author_email__ = 'markricejr@gmail.com'
+__license__ = 'MIT'
+__copyright__ = 'Copyright 2019 Mark Rice'
