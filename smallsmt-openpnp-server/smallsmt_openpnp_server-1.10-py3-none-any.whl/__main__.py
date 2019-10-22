@@ -1,0 +1,3 @@
+import smallsmt_openpnp_server
+
+smallsmt_openpnp_server.main()
