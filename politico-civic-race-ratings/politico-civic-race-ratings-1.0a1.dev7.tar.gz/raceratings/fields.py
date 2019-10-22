@@ -1,0 +1,21 @@
+# Imports from Django.
+from django.contrib.admin import widgets as admin_widgets
+from django.db.models import TextField
+
+
+# Imports from race_ratings.
+from raceratings.widgets import MarkdownEditorWidget
+
+
+class MarkdownField(TextField):
+    def __init__(self, *args, **kwargs):
+        self.widget = MarkdownEditorWidget()
+        super(MarkdownField, self).__init__(*args, **kwargs)
+
+    def formfield(self, **kwargs):
+        defaults = {"widget": self.widget}
+        defaults.update(kwargs)
+
+        if defaults["widget"] == admin_widgets.AdminTextareaWidget:
+            defaults["widget"] = self.widget
+        return super(MarkdownField, self).formfield(**defaults)
