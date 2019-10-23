@@ -1,0 +1,1 @@
+from pyplagiarism.tool import plagiarism
