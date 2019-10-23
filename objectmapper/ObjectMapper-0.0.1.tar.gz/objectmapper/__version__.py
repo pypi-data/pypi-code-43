@@ -1,0 +1,10 @@
+'''Package Metadata'''
+
+__title__ = 'ObjectMapper'
+__description__ = 'A small module for mapping between object types.'
+__url__ = ''
+__version__ = '0.0.1'
+__author__ = 'Conrad Bailey'
+__author_email__ = 'conrad@cbailey.tech'
+__license__ = 'MIT'
+__copyright__ = 'Copyright 2019 Conrad Bailey'
