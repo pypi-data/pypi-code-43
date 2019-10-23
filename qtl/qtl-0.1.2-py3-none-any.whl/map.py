@@ -1,0 +1,166 @@
+"""qtl.map: functions for mapping QTLs"""
+
+__author__ = "Francois Aguet"
+__copyright__ = "Copyright 2018-2019, The Broad Institute"
+__license__ = "BSD3"
+
+import numpy as np
+import pandas as pd
+import scipy.stats
+from . import stats
+from . import genotype as gt
+
+
+def center_normalize(x, axis=0):
+    """Center and normalize x"""
+    if isinstance(x, pd.DataFrame):
+        x0 = x - np.mean(x.values, axis=axis, keepdims=True)
+        return x0 / np.sqrt(np.sum(x0.pow(2).values, axis=axis, keepdims=True))
+    elif isinstance(x, pd.Series):
+        x0 = x - x.mean()
+        return x0 / np.sqrt(np.sum(x0*x0))
+    elif isinstance(x, np.ndarray):
+        x0 = x - np.mean(x, axis=axis, keepdims=True)
+        return x0 / np.sqrt(np.sum(x0*x0, axis=axis))
+
+
+def impute_mean(df):
+    """Impute missing (NaN) values to mean (in place)"""
+    for k,g in enumerate(df.values,1):
+        # ix = g==-1
+        ix = np.isnan(g)
+        if np.any(ix):
+            g[ix] = np.mean(g[~ix])
+
+
+def calculate_association(genotype, phenotype_s, covariates_df=None, impute=True):
+    """Compute genotype-phenotype associations"""
+    if isinstance(genotype, pd.Series):
+        genotype_df = genotype.to_frame().T
+    elif isinstance(genotype, pd.DataFrame):
+        genotype_df = genotype
+    else:
+        raise ValueError('Input type not supported')
+
+    assert np.all(genotype_df.columns==phenotype_s.index)
+    if covariates_df is not None:
+        assert np.all(covariates_df.index==genotype_df.columns)
+
+    # impute missing genotypes
+    if impute:
+        impute_mean(genotype_df)
+
+    # residualize genotypes and phenotype
+    if covariates_df is not None:
+        r = stats.Residualizer(covariates_df)
+        gt_res_df = r.transform(genotype_df)
+        p_res_s = r.transform(phenotype_s)
+        num_covar = covariates_df.shape[1]
+    else:
+        gt_res_df = genotype_df
+        p_res_s = phenotype_s
+        num_covar = 0
+
+    n = p_res_s.std()/gt_res_df.std(axis=1)
+
+    gt_res_df = center_normalize(gt_res_df, axis=1)
+    p_res_s = center_normalize(p_res_s)
+
+    r = gt_res_df.dot(p_res_s)
+    dof = gt_res_df.shape[1] - 2 - num_covar
+
+    tstat2 = dof*r*r / (1-r*r)
+    pval = scipy.stats.f.sf(tstat2, 1, dof)
+
+    df = pd.DataFrame(pval, index=tstat2.index, columns=['pval_nominal'])
+    df['slope'] = r * n
+    df['slope_se'] = df['slope'].abs() / np.sqrt(tstat2)
+    df['maf'] = genotype_df.sum(1) / (2*genotype_df.shape[1])
+    df['maf'] = np.where(df['maf']<=0.5, df['maf'], 1-df['maf'])
+    df['chr'] = df.index.map(lambda x: x.split('_')[0])
+    df['position'] = df.index.map(lambda x: int(x.split('_')[1]))
+    df.index.name = 'variant_id'
+    if isinstance(genotype, pd.Series):
+        df = df.iloc[0]
+    return df
+
+
+def calculate_interaction(genotype_s, phenotype_s, interaction_s, covariates_df, impute=True):
+
+    assert np.all(genotype_s.index==interaction_s.index)
+    dof = phenotype_s.shape[0] - covariates_df.shape[1] - 4
+
+    # impute missing genotypes
+    if impute:
+        impute_mean(genotype_s)
+
+    # interaction term
+    gi = genotype_s * interaction_s
+
+    # center
+    g0 = genotype_s - genotype_s.mean()
+    gi0 = gi - gi.mean()
+    i0 = interaction_s - interaction_s.mean()
+    p0 = phenotype_s - phenotype_s.mean()
+
+    # residualize
+    r = stats.Residualizer(covariates_df)
+    g0 =  r.transform(g0.values.reshape(1,-1), center=False)
+    gi0 = r.transform(gi0.values.reshape(1,-1), center=False)
+    p0 =  r.transform(p0.values.reshape(1,-1), center=False)
+    i0 =  r.transform(i0.values.reshape(1,-1), center=False)
+
+    # regression
+    X = np.r_[g0, i0, gi0].T
+    Xinv = np.linalg.inv(np.dot(X.T, X))
+    b = np.dot(np.dot(Xinv, X.T), p0.reshape(-1,1))
+    r = np.squeeze(np.dot(X, b)) - p0
+    rss = np.sum(r*r)
+    b_se = np.sqrt(np.diag(Xinv) * rss / dof)
+    b = np.squeeze(b)
+    tstat = b / b_se
+    pval = 2*scipy.stats.t.cdf(-np.abs(tstat), dof)
+
+    return pd.Series({
+        'b_g':b[0], 'b_se_g':b_se[0], 'pval_g':pval[0],
+        'b_i':b[1], 'b_se_i':b_se[1], 'pval_i':pval[1],
+        'b_gi':b[2],'b_se_gi':b_se[2],'pval_gi':pval[2],
+    })
+
+
+def get_conditional_pvalues(group_df, genotypes, phenotype_df, covariates_df, phenotype_id=None, window=200000):
+    assert np.all(phenotype_df.columns==covariates_df.index)
+    variant_id = group_df['variant_id'].iloc[0]
+    chrom, pos = variant_id.split('_')[:2]
+    pos = int(pos)
+
+    if isinstance(genotypes, gt.GenotypeIndexer):
+        gt_df = genotypes.get_genotype_window(variant_id, window=window)
+    elif isinstance(genotypes, pd.DataFrame):
+        gt_df = genotypes
+    else:
+        raise ValueError('Unsupported input format')
+
+    maf = gt_df.sum(1) / (2*gt_df.shape[1])
+    maf = np.where(maf<=0.5, maf, 1-maf)
+
+    gt_df = gt_df[maf>0]
+
+    res = []
+    if phenotype_id is not None:
+        pval_df = calculate_association(gt_df, phenotype_df.loc[phenotype_id], covariates_df=covariates_df)
+        pval_df['r2'] = gt_df.corrwith(gt_df.loc[variant_id], axis=1, method='pearson')**2
+        res.append(pval_df)
+
+    for k,(variant_id, phenotype_id) in enumerate(zip(group_df['variant_id'], group_df['phenotype_id']), 1):
+        print('\rProcessing {}/{}'.format(k, group_df.shape[0]), end='')
+        covariates = np.hstack([
+            covariates_df,
+            # gi.get_genotypes(np.setdiff1d(group_df['variant_id'], variant_id)).T,
+            gt_df.loc[np.setdiff1d(group_df['variant_id'], variant_id)].T,
+        ])
+        pval_df = calculate_association(gt_df, phenotype_df.loc[phenotype_id], covariates_df=covariates)
+        pval_df['r2'] = gt_df.corrwith(gt_df.loc[variant_id], axis=1, method='pearson')**2
+
+        res.append(pval_df)
+    return res
