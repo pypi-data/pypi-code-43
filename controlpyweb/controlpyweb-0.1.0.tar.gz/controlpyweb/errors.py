@@ -1,0 +1,18 @@
+"""
+Module: Errors
+Purpose: The purpose of this module is to define the errors that will be thrown by the application.
+"""
+
+
+class ControlPyWebReadOnlyError(Exception):
+    def __init__(self):
+        super().__init__("The IO type cannot be set, it is read only!")
+
+
+class ControlPyWebAddressNotFoundError(Exception):
+    def __init__(self, addr: str):
+        super().__init__("No IO was found with the address of {}!".format(addr))
+
+
+class WebIOConnectionError(Exception):
+    msg = "Unable to establish a connection with the Web IO Module."
