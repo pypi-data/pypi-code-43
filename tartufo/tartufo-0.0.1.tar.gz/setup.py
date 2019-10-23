@@ -1,0 +1,56 @@
+from setuptools import setup
+
+INSTALL_REQUIRES = [
+    'GitPython == 2.1.1',
+    'truffleHogRegexes == 0.0.7'
+]
+
+EXTRAS_REQUIRE = {
+    'tests': [
+        'coverage',
+        "mock; python_version == '2.7'",
+        "pre-commit",
+        'pytest',
+        'pytest-cov',
+        'pytest-sugar',
+        'tox',
+    ]
+}
+
+setup(
+    name='tartufo',
+    version='0.0.1',
+    description='tartufo is a tool for scanning git repositories for secrets/passwords/high-entropy data',
+    long_description='Seaches for secrets/high-entropy/passwords in git histories and pre-commit blobs '
+                     'with the intent to provide developers a way of preventing accidental leaking of '
+                     'privileged data. This project was inspired by Dylan Ayrey\'s project truffleHog '
+                     'https://github.com/dxa4481/truffleHog',
+    url='https://github.com/godaddy/tartufo',
+    download_url='https://pypi.org/project/tartufo/#files',
+    author='GoDaddy',
+    author_email='oss@godaddy.com',
+    license='GNU',
+    packages=['tartufo'],
+    install_requires=INSTALL_REQUIRES,
+    setup_requires='',
+    extras_require=EXTRAS_REQUIRE,
+    entry_points={
+        'console_scripts': ['tartufo = tartufo.cli:main'],
+    },
+    classifiers=[
+        "Development Status :: 3 - Alpha",
+        "Environment :: Console",
+        "Intended Audience :: Developers",
+        "License :: OSI Approved :: GNU General Public License v2 (GPLv2)",
+        "Natural Language :: English",
+        "Operating System :: OS Independent",
+        "Programming Language :: Python",
+        "Programming Language :: Python :: 2.7",
+        "Programming Language :: Python :: 3.5",
+        "Programming Language :: Python :: 3.6",
+        "Programming Language :: Python :: 3.7",
+        "Programming Language :: Python :: 3.8",
+        "Topic :: Security",
+        "Topic :: Software Development :: Version Control :: Git",
+    ]
+)
