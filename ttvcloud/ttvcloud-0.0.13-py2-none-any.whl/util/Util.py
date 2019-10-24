@@ -1,0 +1,91 @@
+# coding:utf-8
+import base64
+import hashlib
+import hmac
+import random
+import sys
+import uuid
+from functools import reduce
+
+from Crypto.Cipher import AES
+
+from ttvcloud.const.Const import LETTER_RUNES
+
+try:
+    from urllib import quote
+except:
+    from urllib.parse import quote
+
+
+class Util(object):
+    @staticmethod
+    def norm_uri(path):
+        return quote(path).replace('%2F', '/').replace('+', '%20')
+
+    @staticmethod
+    def norm_query(params):
+        query = ''
+        for key in sorted(params.keys()):
+            query = query + quote(key, safe='-_.~') + '=' + quote(params[key],
+                                                                  safe='-_.~') + '&'
+        query = query[:-1]
+        return query.replace('+', '%20')
+
+    @staticmethod
+    def hmac_sha256(key, content):
+        # type(key) == <class 'bytes'>
+        if sys.version_info[0] == 3:
+            return hmac.new(key, bytes(content, encoding='utf-8'), hashlib.sha256).digest()
+        else:
+            return hmac.new(key, content, hashlib.sha256).digest()
+
+    @staticmethod
+    def sha256(content):
+        # type(content) == <class 'str'>
+        return hashlib.sha256(content.encode('utf-8')).hexdigest()
+
+    @staticmethod
+    def to_hex(content):
+        lst = []
+        for ch in content:
+            if sys.version_info[0] == 3:
+                hv = hex(ch).replace('0x', '')
+            else:
+                hv = hex(ord(ch)).replace('0x', '')
+            if len(hv) == 1:
+                hv = '0' + hv
+            lst.append(hv)
+        return reduce(lambda x, y: x + y, lst)
+
+    @staticmethod
+    def pad(plain_text):
+        block_size = AES.block_size
+
+        number_of_bytes_to_pad = block_size - len(plain_text) % block_size
+        ascii_string = chr(0)
+        padding_str = number_of_bytes_to_pad * ascii_string
+        padded_plain_text = plain_text + padding_str
+        return padded_plain_text
+
+    @staticmethod
+    def generate_access_key_id(prefix):
+        uid = str(uuid.uuid4())
+        uid_base64 = base64.b64encode(uid.replace('-', '').encode(encoding='utf-8'))
+
+        s = uid_base64.decode().replace('=', '').replace('/', '').replace('+', '').replace('-', '')
+        return prefix + s
+
+    @staticmethod
+    def rand_string_runes(length):
+        return ''.join(random.sample(list(LETTER_RUNES), length))
+
+    @staticmethod
+    def aes_encrypt_cbc_with_base64(orig_data, key):
+        generator = AES.new(key, AES.MODE_CBC, key)
+        crypt = generator.encrypt(Util.pad(orig_data))
+        return base64.b64encode(crypt).decode()
+
+    @staticmethod
+    def generate_secret_key():
+        rand_str = Util.rand_string_runes(32)
+        return Util.aes_encrypt_cbc_with_base64(rand_str, 'ttcloudbestcloud')
