@@ -1,0 +1,2 @@
+from godefine.consts import *
+
