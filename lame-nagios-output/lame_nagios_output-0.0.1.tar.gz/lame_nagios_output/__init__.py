@@ -1,0 +1,1 @@
+from .nagios_output import Output, Check
