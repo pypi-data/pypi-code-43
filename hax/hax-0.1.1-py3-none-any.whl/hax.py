@@ -1,0 +1,1005 @@
+import dis
+import os
+import sys
+import types
+import typing
+
+
+__version__ = "0.1.1"
+
+
+if sys.version_info < (3, 6, 2):
+    raise RuntimeError("HAX only supports Python 3.6.2+!")
+
+
+if sys.implementation.name != "cpython":
+    raise RuntimeError("HAX only supports CPython!")
+
+
+_F = typing.TypeVar("_F", bound=typing.Callable[..., typing.Any])
+
+
+_USAGE_MESSAGE = "HAX inline bytecode functions are not meant to be used directly; you must decorate any functions that use them with @hax."
+
+
+_CALL_FUNCTION = dis.opmap["CALL_FUNCTION"]
+_EXTENDED_ARG = dis.opmap["EXTENDED_ARG"]
+_LOAD_CONST = dis.opmap["LOAD_CONST"]
+_NOP = dis.opmap["NOP"]
+_POP_TOP = dis.opmap["POP_TOP"]
+
+
+class HaxCompileError(SyntaxError):
+    pass
+
+
+class HaxUsageError(RuntimeError):
+    pass
+
+
+def _raise_hax_error(
+    message: str, filename: str, line: int, op: dis.Instruction
+) -> typing.NoReturn:
+
+    if os.path.isfile(filename):
+        with open(filename) as file:
+            for line_number, text in enumerate(file, 1):
+                if line_number != line:
+                    continue
+                source: typing.Optional[str] = text
+                if op.starts_line:
+                    column: typing.Optional[int] = text.find(str(op.argval))
+                    if column == -1:
+                        column = None
+                break
+    else:
+        source = column = None
+
+    raise HaxCompileError(message, (filename, line, column, source))
+
+
+def _instructions_with_lines(
+    code: types.CodeType
+) -> typing.Iterator[typing.Tuple[dis.Instruction, int]]:
+    line = code.co_firstlineno
+    for instruction in dis.get_instructions(code):
+        line = instruction.starts_line or line
+        yield instruction, line
+
+
+def _backfill(
+    arg: int,
+    start: int,
+    line: int,
+    following: dis.Instruction,
+    offset: int,
+    new_op: int,
+    filename: str,
+) -> typing.Iterator[int]:
+
+    size = ((offset - start) >> 1) + 1
+
+    assert 1 <= size < 5
+
+    if (1 << 32) - 1 < arg:
+        message = f"Args greater than {(1 << 32) - 1:,} aren't supported (got {arg:,})!"
+        _raise_hax_error(message, filename, line, following)
+
+    if arg < 0:
+        message = f"Args less than 0 aren't supported (got {arg:,})!"
+        _raise_hax_error(message, filename, line, following)
+
+    if 1 << 24 <= arg:
+        yield _EXTENDED_ARG
+        yield arg >> 24 & 255
+    elif 4 <= size:
+        yield _NOP
+        yield 0
+
+    if 1 << 16 <= arg:
+        yield _EXTENDED_ARG
+        yield arg >> 16 & 255
+    elif 3 <= size:
+        yield _NOP
+        yield 0
+
+    if 1 << 8 <= arg:
+        yield _EXTENDED_ARG
+        yield arg >> 8 & 255
+    elif 2 <= size:
+        yield _NOP
+        yield 0
+
+    yield new_op
+    yield arg & 255
+
+
+def hax(function: _F) -> _F:
+
+    ops = _instructions_with_lines(function.__code__)
+
+    code: typing.List[int] = []
+    last_line = function.__code__.co_firstlineno
+    lnotab: typing.List[int] = []
+    consts: typing.List[object] = [function.__code__.co_consts[0]]
+    names: typing.Dict[str, int] = {}
+    stacksize = 0
+    jumps: typing.Dict[int, typing.List[typing.Dict[str, typing.Any]]] = {}
+    deferred: typing.Dict[int, int] = {}
+    varnames: typing.Dict[str, int] = {
+        name: index
+        for index, name in enumerate(
+            function.__code__.co_varnames[
+                : function.__code__.co_argcount
+                + function.__code__.co_kwonlyargcount
+                + getattr(function.__code__, "co_posonlyargcount", 0)
+            ]
+        )
+    }
+
+    labels: typing.Dict[typing.Hashable, int] = {}
+    deferred_labels: typing.Dict[
+        typing.Hashable, typing.List[typing.Dict[str, typing.Any]]
+    ] = {}
+
+    for _ in range((len(function.__code__.co_code) >> 1) + 1):
+
+        extended: typing.List[int] = []
+
+        for op, line in ops:
+
+            if op.is_jump_target:
+                deferred[op.offset] = len(code)
+                offset = len(code)
+                for info in jumps.get(op.offset, ()):
+                    info["arg"] = offset - info["arg"]
+                    code[info["start"] : info["offset"] + 2] = _backfill(**info)
+                    assert len(code) == offset, "Code changed size!"
+
+            if op.opcode < dis.HAVE_ARGUMENT:
+                stacksize += max(0, dis.stack_effect(op.opcode))
+                lnotab += 1, line - last_line
+                code += op.opcode, 0
+                last_line = line
+                continue
+
+            if op.opcode != _EXTENDED_ARG:
+                break
+
+            assert isinstance(op.arg, int)
+            extended += _EXTENDED_ARG, op.arg
+
+        else:
+            break
+
+        if op.argval not in dis.opmap and op.argval != "LABEL":
+
+            info = dict(
+                arg=op.argval or 0,
+                start=len(code),
+                line=line,
+                following=op,
+                offset=len(code) + len(extended),
+                new_op=op.opcode,
+                filename=function.__code__.co_filename,
+            )
+
+            if op.opcode in dis.haslocal:
+                info["arg"] = varnames.setdefault(op.argval, len(varnames))
+            elif op.opcode in dis.hasname:
+                info["arg"] = names.setdefault(op.argval, len(names))
+            elif op.opcode in dis.hasconst:
+                try:
+                    info["arg"] = consts.index(op.argval)
+                except ValueError:
+                    consts.append(op.argval)
+                    info["arg"] = len(consts) - 1
+            elif op.opcode in dis.hasjabs:
+                if op.argval <= op.offset:
+                    info["arg"] = deferred[op.argval]
+                else:
+                    info["arg"] = 0
+                    jumps.setdefault(op.argval, []).append(info)
+            elif op.opcode in dis.hasjrel:
+                info["arg"] = len(code) + len(extended) + 2
+                jumps.setdefault(op.argval, []).append(info)
+
+            stacksize += max(
+                0,
+                dis.stack_effect(
+                    op.opcode, info["arg"] if dis.HAVE_ARGUMENT <= op.opcode else None
+                ),
+            )
+            new_code = tuple(_backfill(**info))
+            lnotab += 1, line - last_line, len(new_code) - 1, 0
+            code += new_code
+            last_line = line
+            continue
+
+        if op.opname not in {
+            # "LOAD_CLASSDEREF",
+            # "LOAD_CLOSURE",
+            # "LOAD_DEREF",
+            "LOAD_FAST",
+            "LOAD_GLOBAL",
+            "LOAD_NAME",
+        }:
+            message = "Ops must consist of a simple call."
+            _raise_hax_error(message, function.__code__.co_filename, line, op)
+
+        args = 0
+        arg = 0
+
+        for following, _ in ops:
+
+            if following.opcode == _EXTENDED_ARG:
+                continue
+
+            if following.opcode == _LOAD_CONST:
+                arg = following.argval
+                args += 1
+                continue
+
+            break
+
+        else:
+            message = "Ops must consist of a simple call."
+            _raise_hax_error(message, function.__code__.co_filename, line, op)
+
+        if following.opcode != _CALL_FUNCTION:
+            message = "Ops must consist of a simple call."
+            _raise_hax_error(message, function.__code__.co_filename, line, op)
+
+        following, _ = next(ops)
+
+        if following.opcode != _POP_TOP:
+            message = "Ops must be standalone statements."
+            _raise_hax_error(message, function.__code__.co_filename, line, op)
+
+        line = following.starts_line or line
+
+        if op.argval == "LABEL":
+            if arg in labels:
+                message = f"Label {arg!r} already exists!"
+                _raise_hax_error(
+                    message, function.__code__.co_filename, line, following
+                )
+            offset = len(code)
+            labels[arg] = offset
+            for info in deferred_labels.pop(arg, ()):
+                info["arg"] = offset - info["arg"]
+                code[info["start"] : info["offset"] + 2] = _backfill(**info)
+                assert len(code) == offset, "Code changed size!"
+            last_line = line
+            continue
+
+        new_op = dis.opmap[op.argval]
+
+        has_arg = dis.HAVE_ARGUMENT <= new_op
+
+        if args != has_arg:
+            message = (
+                f"Number of arguments is wrong (expected {int(has_arg)}, got {args})."
+            )
+            _raise_hax_error(message, function.__code__.co_filename, line, op)
+
+        # TODO: Same hadnling here (with "info" dict) as pure-python forwarding above
+        if new_op in dis.haslocal:
+            if not isinstance(arg, str):
+                message = f"Expected a string (got {arg!r})."
+                _raise_hax_error(
+                    message, function.__code__.co_filename, line, following
+                )
+            arg = varnames.setdefault(arg, len(varnames))
+        elif new_op in dis.hasname:
+            if not isinstance(arg, str):
+                message = f"Expected a string (got {arg!r})."
+                _raise_hax_error(
+                    message, function.__code__.co_filename, line, following
+                )
+            arg = names.setdefault(arg, len(names))
+        elif new_op in dis.hasconst:
+            try:
+                arg = consts.index(arg)
+            except ValueError:
+                consts.append(arg)
+                arg = len(consts) - 1
+        elif new_op in dis.hascompare:
+            if not isinstance(arg, str):
+                message = f"Expected a string (got {arg!r})."
+                _raise_hax_error(
+                    message, function.__code__.co_filename, line, following
+                )
+            try:
+                arg = dis.cmp_op.index(arg)
+            except ValueError:
+                message = f"Bad comparision operator {arg!r}; expected one of {' / '.join(map(repr, dis.cmp_op))}!"
+                _raise_hax_error(
+                    message, function.__code__.co_filename, line, following
+                )
+        elif new_op in dis.hasfree:
+            if not isinstance(arg, str):
+                message = f"Expected a string (got {arg!r})."
+                _raise_hax_error(
+                    message, function.__code__.co_filename, line, following
+                )
+            try:
+                arg = (
+                    function.__code__.co_cellvars + function.__code__.co_freevars
+                ).index(arg)
+            except ValueError:
+                message = f'No free/cell variable {arg!r}; maybe use "nonlocal" in the inner scope to compile correctly?'
+                _raise_hax_error(
+                    message, function.__code__.co_filename, line, following
+                )
+        elif new_op in dis.hasjabs:
+            try:
+                hash(arg)
+            except TypeError:
+                message = f"Expected a hashable label (got {arg!r})."
+                _raise_hax_error(
+                    message, function.__code__.co_filename, line, following
+                )
+            if arg in labels:
+                arg = labels[arg]
+            else:
+                max_jump = len(function.__code__.co_code) - 1
+                if 1 << 24 <= max_jump:
+                    padding = 6
+                elif 1 << 16 <= max_jump:
+                    padding = 4
+                elif 1 << 8 <= max_jump:
+                    padding = 2
+                else:
+                    padding = 0
+                info = dict(
+                    arg=0,
+                    start=len(code),
+                    line=line,
+                    following=following,
+                    offset=len(code) + padding,
+                    new_op=new_op,
+                    filename=function.__code__.co_filename,
+                )
+                deferred_labels.setdefault(arg, []).append(info)
+                stacksize += max(0, dis.stack_effect(new_op, 0))
+                new_code = tuple(_backfill(**info))
+                lnotab += 1, line - last_line, len(new_code) - 1, 0
+                code += new_code
+                last_line = line
+                continue
+        elif new_op in dis.hasjrel:
+            try:
+                hash(arg)
+            except TypeError:
+                message = f"Expected a hashable label (got {arg!r})."
+                _raise_hax_error(
+                    message, function.__code__.co_filename, line, following
+                )
+            if arg in labels:
+                message = "Relative jumps must be forwards, not backwards!"
+                _raise_hax_error(
+                    message, function.__code__.co_filename, line, following
+                )
+            max_jump = len(function.__code__.co_code) - len(code) - 2 - 1
+            if 1 << 24 <= max_jump:
+                padding = 6
+            elif 1 << 16 <= max_jump:
+                padding = 4
+            elif 1 << 8 <= max_jump:
+                padding = 2
+            else:
+                padding = 0
+            info = dict(
+                arg=len(code) + padding + 2,
+                start=len(code),
+                line=line,
+                following=following,
+                offset=len(code) + padding,
+                new_op=new_op,
+                filename=function.__code__.co_filename,
+            )
+            deferred_labels.setdefault(arg, []).append(info)
+            stacksize += max(0, dis.stack_effect(new_op, 0))
+            new_code = tuple(_backfill(**info))
+            lnotab += 1, line - last_line, len(new_code) - 1, 0
+            code += new_code
+            last_line = line
+            continue
+        elif not isinstance(arg, int):
+            message = f"Expected integer argument, got {arg!r}."
+            _raise_hax_error(message, function.__code__.co_filename, line, following)
+
+        stacksize += max(0, dis.stack_effect(new_op, arg if has_arg else None))
+        new_code = tuple(
+            _backfill(
+                arg=arg,
+                start=0,
+                line=line,
+                following=following,
+                offset=0,
+                new_op=new_op,
+                filename=function.__code__.co_filename,
+            )
+        )
+        lnotab += 1, line - last_line, len(new_code) - 1, 0
+        code += new_code
+        last_line = line
+
+    else:
+
+        assert False, "Main loop exited prematurely!"
+
+    if deferred_labels:
+        raise HaxUsageError(
+            f"The following labels don't exist: {', '.join(map(repr, deferred_labels))}"
+        )
+
+    new = types.FunctionType(
+        types.CodeType(  # type: ignore
+            function.__code__.co_argcount,
+            *(
+                (function.__code__.co_posonlyargcount,)  # type: ignore
+                if hasattr(function.__code__, "co_posonlyargcount")
+                else ()
+            ),
+            function.__code__.co_kwonlyargcount,
+            len(varnames),
+            stacksize,  # TODO: Fix this up?
+            function.__code__.co_flags,
+            bytes(code),
+            tuple(consts),
+            tuple(names),
+            tuple(varnames),
+            function.__code__.co_filename,
+            function.__code__.co_name,
+            function.__code__.co_firstlineno,
+            bytes(lnotab),  # TODO: Fix this up!
+            function.__code__.co_freevars,
+            function.__code__.co_cellvars,
+        ),
+        function.__globals__,  # type: ignore
+        function.__name__,
+        function.__defaults__,  # type: ignore
+        function.__closure__,  # type: ignore
+    )
+
+    new.__annotations__ = function.__annotations__.copy()
+    new.__kwdefaults__ = (function.__kwdefaults__ or {}).copy() or None  # type: ignore
+    new.__dict__ = function.__dict__.copy()
+
+    return new  # type: ignore
+
+
+def LABEL(arg: typing.Hashable) -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def BEFORE_ASYNC_WITH() -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+if (3, 8) <= sys.version_info:
+
+    def BEGIN_FINALLY() -> None:
+        raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def BINARY_ADD() -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def BINARY_AND() -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def BINARY_FLOOR_DIVIDE() -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def BINARY_LSHIFT() -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def BINARY_MATRIX_MULTIPLY() -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def BINARY_MODULO() -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def BINARY_MULTIPLY() -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def BINARY_OR() -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def BINARY_POWER() -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def BINARY_RSHIFT() -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def BINARY_SUBSCR() -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def BINARY_SUBTRACT() -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def BINARY_TRUE_DIVIDE() -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def BINARY_XOR() -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+if sys.version_info < (3, 8):
+
+    def BREAK_LOOP() -> None:
+        raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def BUILD_CONST_KEY_MAP(arg: int) -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def BUILD_LIST(arg: int) -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def BUILD_LIST_UNPACK(arg: int) -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def BUILD_MAP(arg: int) -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def BUILD_MAP_UNPACK(arg: int) -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def BUILD_MAP_UNPACK_WITH_CALL(arg: int) -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def BUILD_SET(arg: int) -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def BUILD_SET_UNPACK(arg: int) -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def BUILD_SLICE(arg: int) -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def BUILD_STRING(arg: int) -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def BUILD_TUPLE(arg: int) -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def BUILD_TUPLE_UNPACK(arg: int) -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def BUILD_TUPLE_UNPACK_WITH_CALL(arg: int) -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+if (3, 8) <= sys.version_info:
+
+    def CALL_FINALLY(arg: typing.Hashable) -> None:
+        raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def CALL_FUNCTION(arg: int) -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def CALL_FUNCTION_EX(arg: int) -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def CALL_FUNCTION_KW(arg: int) -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+if (3, 7) <= sys.version_info:
+
+    def CALL_METHOD(arg: int) -> None:
+        raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def COMPARE_OP(arg: str) -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+if sys.version_info < (3, 8):
+
+    def CONTINUE_LOOP(arg: typing.Hashable) -> None:
+        raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def DELETE_ATTR(arg: str) -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def DELETE_DEREF(arg: str) -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def DELETE_FAST(arg: str) -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def DELETE_GLOBAL(arg: str) -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def DELETE_NAME(arg: str) -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def DELETE_SUBSCR() -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def DUP_TOP() -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def DUP_TOP_TWO() -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+if (3, 8) <= sys.version_info:
+
+    def END_ASYNC_FOR() -> None:
+        raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def END_FINALLY() -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def EXTENDED_ARG(arg: int) -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def FORMAT_VALUE(arg: int) -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def FOR_ITER(arg: typing.Hashable) -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def GET_AITER() -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def GET_ANEXT() -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def GET_AWAITABLE() -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def GET_ITER() -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def GET_YIELD_FROM_ITER() -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def IMPORT_FROM(arg: str) -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def IMPORT_NAME(arg: str) -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def IMPORT_STAR() -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def INPLACE_ADD() -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def INPLACE_AND() -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def INPLACE_FLOOR_DIVIDE() -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def INPLACE_LSHIFT() -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def INPLACE_MATRIX_MULTIPLY() -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def INPLACE_MODULO() -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def INPLACE_MULTIPLY() -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def INPLACE_OR() -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def INPLACE_POWER() -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def INPLACE_RSHIFT() -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def INPLACE_SUBTRACT() -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def INPLACE_TRUE_DIVIDE() -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def INPLACE_XOR() -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def JUMP_ABSOLUTE(arg: typing.Hashable) -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def JUMP_FORWARD(arg: typing.Hashable) -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def JUMP_IF_FALSE_OR_POP(arg: typing.Hashable) -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def JUMP_IF_TRUE_OR_POP(arg: typing.Hashable) -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def LIST_APPEND(arg: int) -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+if (3, 9) <= sys.version_info:
+
+    def LOAD_ASSERTION_ERROR() -> None:
+        raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def LOAD_ATTR(arg: str) -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def LOAD_BUILD_CLASS() -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def LOAD_CLASSDEREF(arg: str) -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def LOAD_CLOSURE(arg: str) -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def LOAD_CONST(arg: typing.Hashable) -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def LOAD_DEREF(arg: str) -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def LOAD_FAST(arg: str) -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def LOAD_GLOBAL(arg: str) -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+if (3, 7) <= sys.version_info:
+
+    def LOAD_METHOD(arg: str) -> None:
+        raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def LOAD_NAME(arg: str) -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def MAKE_FUNCTION(arg: int) -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def MAP_ADD(arg: int) -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def NOP() -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def POP_BLOCK() -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def POP_EXCEPT() -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+if (3, 8) <= sys.version_info:
+
+    def POP_FINALLY(arg: bool) -> None:
+        raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def POP_JUMP_IF_FALSE(arg: typing.Hashable) -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def POP_JUMP_IF_TRUE(arg: typing.Hashable) -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def POP_TOP() -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def PRINT_EXPR() -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def RAISE_VARARGS(arg: int) -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def RETURN_VALUE() -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+if (3, 8) <= sys.version_info:
+
+    def ROT_FOUR() -> None:
+        raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def ROT_THREE() -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def ROT_TWO() -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def SETUP_ANNOTATIONS() -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def SETUP_ASYNC_WITH(arg: typing.Hashable) -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+if sys.version_info < (3, 8):
+
+    def SETUP_EXCEPT(arg: typing.Hashable) -> None:
+        raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def SETUP_FINALLY(arg: typing.Hashable) -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+if sys.version_info < (3, 8):
+
+    def SETUP_LOOP(arg: typing.Hashable) -> None:
+        raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def SETUP_WITH(arg: typing.Hashable) -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def SET_ADD(arg: int) -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def STORE_ATTR(arg: str) -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+if sys.version_info < (3, 7):
+
+    def STORE_ANNOTATION(arg: str) -> None:
+        raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def STORE_DEREF(arg: str) -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def STORE_FAST(arg: str) -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def STORE_GLOBAL(arg: str) -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def STORE_NAME(arg: str) -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def STORE_SUBSCR() -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def UNARY_INVERT() -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def UNARY_NEGATIVE() -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def UNARY_NOT() -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def UNARY_POSITIVE() -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def UNPACK_EX(arg: int) -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def UNPACK_SEQUENCE(arg: int) -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def WITH_CLEANUP_FINISH() -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def WITH_CLEANUP_START() -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def YIELD_FROM() -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
+
+
+def YIELD_VALUE() -> None:
+    raise HaxUsageError(_USAGE_MESSAGE)
