@@ -1,0 +1,127 @@
+import requests
+from json import JSONDecodeError
+from hashlib import sha1
+from urllib.parse import urlencode
+from pprint import pformat
+
+
+def urljoin(*args):
+    return "/".join(map(lambda x: str(x).strip('/'), args))
+
+
+def strip_proto(error_id):
+    return '.'.join(error_id.split('.')[2:])
+
+
+def get_error_rel_id(error_id):
+    return '.'.join(error_id.split('.')[2:])
+
+
+def get_error_class(error_id):
+    return error_id.split('.')[-2]
+
+
+class RpcError(Exception):
+    __handlers__ = {}
+
+    @classmethod
+    def __init_subclass__(cls, error_id=None, **kwargs):
+        super().__init_subclass__(**kwargs)
+        if isinstance(error_id, list):
+            for eid in error_id:
+                cls.__handlers__[eid] = cls
+        else:
+            assert error_id is not None
+            cls.__handlers__[error_id] = cls
+
+    @classmethod
+    def from_response(cls, res: requests.Response):
+        handler = RpcError
+        if res.headers.get('content-type') == 'application/json':
+            errors = res.json()
+            assert isinstance(errors, list)
+            error = errors[-1]
+            for key in [error['id'], get_error_rel_id(error['id']), get_error_class(error['id'])]:
+                if key in cls.__handlers__:
+                    handler = cls.__handlers__[key]
+                    break
+        else:
+            error = res.text
+
+        return handler(error)
+
+    def __str__(self):
+        return pformat(self.args)
+
+
+class RpcNode:
+
+    def __init__(self, uri, network=''):
+        self.uri = uri
+        self.network = network
+        self._cache = dict()
+        self._session = requests.Session()
+
+    def __repr__(self):
+        res = [
+            super(RpcNode, self).__repr__(),
+            '\nNode address',
+            f'{self.uri} ({self.network})',
+            '\nCached urls',
+            *list(self._cache.keys())
+        ]
+        return '\n'.join(res)
+
+    def request(self, method, path, **kwargs) -> requests.Response:
+        res = self._session.request(
+            method=method,
+            url=urljoin(self.uri, path),
+            headers={
+                'content-type': 'application/json',
+                'user-agent': 'PyTezos'
+            },
+            **kwargs
+        )
+        if res.status_code != 200:
+            raise RpcError.from_response(res) from None
+
+        return res
+
+    def get(self, path, params=None, caching=False, cache_key=None, timeout=None):
+        if caching:
+            if not cache_key:
+                cache_key = path
+                if params:
+                    cache_key += f'?{urlencode(params)}'
+            if cache_key in self._cache:
+                return self._cache[cache_key]
+
+        res = self.request('GET', path, params=params, timeout=timeout).json()
+        if caching:
+            self._cache[cache_key] = res
+
+        return res
+
+    def post(self, path, params=None, json=None, caching=False):
+        cache_key = None
+        if caching:
+            cache_key = sha1((path + str(json)).encode()).hexdigest()
+            if cache_key in self._cache:
+                return self._cache[cache_key]
+
+        response = self.request('POST', path, params=params, json=json)
+        try:
+            res = response.json()
+        except JSONDecodeError:
+            res = response.text
+
+        if caching:
+            self._cache[cache_key] = res
+
+        return res
+
+    def delete(self, path, params=None):
+        return self.request('DELETE', path, params=params).json()
+
+    def put(self, path, params=None):
+        return self.request('PUT', path, params=params).json()
