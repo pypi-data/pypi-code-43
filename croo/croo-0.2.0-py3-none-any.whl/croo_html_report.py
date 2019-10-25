@@ -1,0 +1,69 @@
+#!/usr/bin/env python3
+"""CrooHtmlReport: HTML report generator for Croo
+
+Author:
+    Jin Lee (leepc12@gmail.com) at ENCODE-DCC
+"""
+
+import os
+from .croo_html_report_tracks import CrooHtmlReportUCSCTracks
+from .croo_html_report_file_table import CrooHtmlReportFileTable
+from caper.caper_uri import CaperURI
+
+
+class CrooHtmlReport(object):
+    HEAD = '@HEAD_CONTENTS'
+    BODY = '@BODY_CONTENTS'
+    HTML = """
+    <!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+    <html lang="en">
+      <head>
+        <meta charset="utf-8">
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.11.1/\
+jquery.min.js"></script>
+        {head_contents}
+      </head>
+      <body>{body_contents}</body>
+    </html>
+    """.format(head_contents=HEAD, body_contents=BODY)
+    REPORT_HTML = 'croo.report.{workflow_id}.html'
+
+    def __init__(self, out_dir, workflow_id,
+                 ucsc_genome_db=None,
+                 ucsc_genome_pos=None):
+        self._out_dir = out_dir
+        self._workflow_id = workflow_id
+        self._ucsc_tracks = CrooHtmlReportUCSCTracks(
+            out_dir=out_dir,
+            workflow_id=workflow_id,
+            ucsc_genome_db=ucsc_genome_db,
+            ucsc_genome_pos=ucsc_genome_pos)
+        self._file_table = CrooHtmlReportFileTable(
+            out_dir=out_dir,
+            workflow_id=workflow_id)
+
+    def add_to_file_table(self, full_path, url, table_item):
+        self._file_table.add(full_path, url, table_item)
+
+    def add_to_ucsc_track(self, url, track_line):
+        self._ucsc_tracks.add(url, track_line)
+
+    def save_to_file(self):
+        html = CrooHtmlReport.HTML
+
+        head = ''
+        head += self._file_table.get_html_head_str()
+        html = html.replace(CrooHtmlReport.HEAD, head)
+
+        body = ''
+        body += self._file_table.get_html_body_str()
+        body += self._ucsc_tracks.get_html_body_str()
+        html = html.replace(CrooHtmlReport.BODY, body)
+
+        # write to file and return HTML string
+        uri_report = os.path.join(
+            self._out_dir,
+            CrooHtmlReport.REPORT_HTML.format(
+                workflow_id=self._workflow_id))
+        CaperURI(uri_report).write_str_to_file(html)
+        return html
