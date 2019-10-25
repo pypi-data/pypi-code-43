@@ -1,0 +1,360 @@
+import os
+import gzip
+import logging
+import numpy as np
+import pandas as pd
+import pkg_resources
+import seaborn as sns
+import matplotlib.pyplot as plt
+from crispy import logger as LOG
+from GuideDesign import GuideDesign
+from crispy.LibRepresentationReport import LibraryRepresentaion
+
+
+DPATH = pkg_resources.resource_filename("data", "dualguide/")
+RPATH = pkg_resources.resource_filename("notebooks", "dualguide/reports/")
+
+FASTQ_DIR = (
+    "MiSeq_walk_up_222-141639512/FASTQ_Generation_2019-09-25_13_48_47Z-193251115/"
+)
+
+SEQUENCE_LEN = 200
+SCAFFOLD_LEN = 6
+
+
+def parse_read(lines):
+    read_dict = dict()
+
+    # Read sample index
+    read_dict["index"] = lines[0].split(":")[-1:][0]
+
+    # Sequence
+    read_dict["sequence"] = lines[1]
+
+    # Exclude unrecognised bp
+    if len(set(lines[1]) - {"A", "T", "C", "G"}) > 0:
+        return None
+
+    assert (
+        len(lines[1]) == SEQUENCE_LEN
+    ), f"Expected fastq file sequence length to be 25bp: {len(lines[1])} found instead {lines[1]}"
+
+    # Parse sequence
+    read_dict["sgRNA1"] = read_dict["sequence"][:20]
+    read_dict["sgRNA2"] = read_dict["sequence"][-27:-7]
+
+    read_dict["scaffold_start"] = read_dict["sequence"][20 : (20 + 76)]
+    read_dict["linker"] = read_dict["sequence"][(20 + 76) : (20 + 76 + 6)]
+    read_dict["trna"] = read_dict["sequence"][(20 + 76 + 6) : (20 + 76 + 6 + 71)]
+    read_dict["scaffold_end"] = read_dict["sequence"][-7:]
+
+    return read_dict
+
+
+def parse_fastq_file(filename):
+    counts = []
+
+    with gzip.open(filename, "rt") as f:
+        # Read FASTQ
+        experiment_fastq = f.read().splitlines()
+
+        # Parse every four lines
+        line_start = 4
+
+        while line_start < len(experiment_fastq):
+            # Parse read
+            reads = experiment_fastq[line_start - 4 : line_start]
+
+            try:
+                read_dict = parse_read(reads)
+
+            except KeyError as e:
+                LOG.error(e)
+                LOG.error(f"At line {line_start}: {reads}")
+                raise e
+
+            # Store parsed read
+            if read_dict is not None:
+                counts.append(read_dict)
+
+            line_start += 4
+
+    counts = pd.DataFrame(counts)
+
+    return counts
+
+
+def fastq_to_counts(counts, library, index):
+    # Annotate which scaffold and indecies match perfectly
+    counts_lib = counts.assign(index_match=(counts["index"] == index).values)
+
+    # Annotate fastq sequences with sgRNA IDs
+    id_fields = ["sgRNA1", "scaffold_start", "linker", "sgRNA2"]
+    lib_ids = library.groupby(id_fields)["sgRNA_ID"].agg(lambda v: ";".join(set(v)))
+    counts_lib = counts_lib.assign(sgRNA_ID=lib_ids.reindex(counts[id_fields]).values)
+
+    # Annotate fastq sequences with sgRNA IDs only
+    id_fields = ["sgRNA1", "sgRNA2"]
+    lib_ids = library.groupby(id_fields)["sgRNA_ID"].agg(lambda v: ";".join(set(v)))
+    counts_lib = counts_lib.assign(sgRNA_ID_only=lib_ids.reindex(counts[id_fields]).values)
+
+    # Annotate scaffold match
+    counts_lib = counts_lib.assign(scaffold_match=counts_lib["scaffold_start"].isin(set(library["scaffold_start"])).values)
+
+    # Annotate sgRNAs match
+    sgrnas = set(lib_comps["sgRNA1"]).intersection(lib_comps["sgRNA2"])
+    counts_lib = counts_lib.assign(sgRNA1_match=counts_lib["sgRNA1"].isin(sgrnas).values)
+    counts_lib = counts_lib.assign(sgRNA2_match=counts_lib["sgRNA2"].isin(sgrnas).values)
+
+    # Annotate scaffold match
+    counts_lib = counts_lib.assign(trna_match=counts_lib["trna"].isin(set(library["trna"])).values)
+
+    # Annotate scaffold match
+    counts_lib = counts_lib.assign(linker_match=counts_lib["linker"].isin(set(library["linker"])).values)
+
+    # Report of perfect matches
+    n_reads = counts_lib.shape[0]
+
+    match_report = dict(
+        index=counts_lib["index_match"].sum() / n_reads,
+        sgRNA=counts_lib["sgRNA_ID"].count() / n_reads,
+        sgRNA_only=counts_lib["sgRNA_ID_only"].count() / n_reads,
+        sgRNA1=counts_lib["sgRNA1_match"].sum() / n_reads,
+        sgRNA2=counts_lib["sgRNA2_match"].sum() / n_reads,
+        sgRNAany=counts_lib[["sgRNA1_match", "sgRNA2_match"]].any(1).sum() / n_reads,
+        sgRNAall=counts_lib[["sgRNA1_match", "sgRNA2_match"]].all(1).sum() / n_reads,
+        scaffold=counts_lib["scaffold_match"].sum() / n_reads,
+        trna=counts_lib["trna_match"].sum() / n_reads,
+        linker=counts_lib["linker_match"].sum() / n_reads,
+    )
+
+    # Count number of read per guide
+    counts_lib = counts_lib["sgRNA_ID"].dropna().value_counts()
+    counts_lib = counts_lib.reindex(set(library["sgRNA_ID"]).union(set(counts_lib.index)), fill_value=0)
+    counts_lib = counts_lib.sort_values(ascending=False)
+
+    return counts_lib, match_report
+
+
+if __name__ == "__main__":
+    # Library samplesheet
+    #
+    lib = pd.read_excel(
+        f"{DPATH}/DualsgRNAPilotLib_v0.99.xlsx",
+        sheet_name="Q3 1Gene 2sgRNA (420) Reversed",
+        index_col="guide_id",
+    )
+
+    lib_comps = pd.read_excel(f"{DPATH}/DualsgRNAPilotLib_v1.1_ordered_components.xlsx", sheet_name="processed")
+
+    lib_ss = pd.read_excel(f"{DPATH}/samplesheet.xlsx")
+
+    # Analyse each library prep
+    #
+    lib_counts, lib_reports = {}, {}
+
+    for idx in lib_ss.query("read == 'R1'").index:
+        s_name = lib_ss.loc[idx, "name"]
+        LOG.info(f"{s_name} (index={idx})")
+
+        # Import fastq file
+        fastq_file = f"{DPATH}/{FASTQ_DIR}/{lib_ss.loc[idx, 'directory']}/{lib_ss.loc[idx, 'file']}"
+
+        # Parse reads from fastq file
+        fastq_counts = parse_fastq_file(fastq_file)
+
+        # Calculate sgRNA counts and match report
+        # counts, library, index = fastq_counts, lib_comps, lib_ss.loc[idx, "index"]
+        sgrna_counts, fastq_qc = fastq_to_counts(
+            fastq_counts, lib_comps, lib_ss.loc[idx, "index"]
+        )
+
+        lib_counts[s_name] = sgrna_counts
+        lib_reports[s_name] = fastq_qc
+        LOG.info(
+            f"Match(%): "
+            + "; ".join({f"{k}={v*100:.2f}%" for k, v in fastq_qc.items()})
+        )
+
+    lib_counts = pd.DataFrame(lib_counts)
+    lib_counts.to_excel(f"{RPATH}/dual_guide_library_v1.1_counts.xlsx")
+    # lib_counts = pd.read_excel(f"{RPATH}/dual_guide_library_v1.1_counts.xlsx", index_col=0)
+
+    lib_reports = pd.DataFrame(lib_reports)
+    lib_reports.to_excel(f"{RPATH}/dual_guide_library_v1.1_reports.xlsx")
+    # lib_reports = pd.read_excel(f"{RPATH}/dual_guide_library_v1.1_reports.xlsx", index_col=0)
+
+    # Library representation reports
+    #
+    lib_report = LibraryRepresentaion(lib_counts[[";" not in i for i in lib_counts.index]])
+
+    order = ["Sample1_R1", "Sample2_R1", "Sample3_R1"]
+    pal = lib_ss.query("read == 'R1'").set_index("name")["palette"].to_dict()
+
+    # Comparison gini scores
+    #
+    gini_scores_comparison = dict(
+        avana=0.361, brunello=0.291, yusa_v1=0.342, yusa_v11=0.229
+    )
+
+    gini_scores_comparison_palette = dict(
+        avana="#66c2a5", brunello="#fc8d62", yusa_v1="#8da0cb", yusa_v11="#e78ac3"
+    )
+
+    gini_scores = (
+        lib_report.gini().reset_index().rename(columns={"index": "sample", 0: "gini"})
+    )
+
+    # Gini scores barplot
+    #
+    plt.figure(figsize=(2.5, 1.0), dpi=600)
+
+    sns.barplot(
+        "gini",
+        "sample",
+        data=gini_scores,
+        orient="h",
+        order=order,
+        palette=pal,
+        saturation=1,
+        lw=0,
+    )
+
+    plt.grid(True, ls="-", lw=0.1, alpha=1.0, zorder=0, axis="x")
+
+    for k, v in gini_scores_comparison.items():
+        plt.axvline(
+            v, lw=0.5, zorder=1, color=gini_scores_comparison_palette[k], label=k
+        )
+
+    plt.xlabel("Gini score")
+    plt.ylabel("")
+
+    plt.legend(
+        frameon=False, loc="center left", bbox_to_anchor=(1, 0.5), prop={"size": 4}
+    )
+
+    plt.savefig(f"{RPATH}/librep_gini_barplot.pdf", bbox_inches="tight")
+    plt.close("all")
+
+    # Lorenz curves
+    #
+    lib_report.lorenz_curve()
+    plt.gcf().set_size_inches(2, 2)
+    plt.savefig(f"{RPATH}/librep_lorenz_curve.pdf", bbox_inches="tight", dpi=600)
+    plt.close("all")
+
+    # sgRNA counts boxplots
+    #
+    lib_report.boxplot()
+    plt.gcf().set_size_inches(1.5, 1.5)
+    plt.savefig(f"{RPATH}/librep_counts_boxplots.pdf", bbox_inches="tight", dpi=600)
+    plt.close("all")
+
+    # sgRNA counts histograms
+    #
+    lib_report.distplot()
+    plt.gcf().set_size_inches(2.5, 2)
+    plt.savefig(f"{RPATH}/librep_counts_histograms.pdf", bbox_inches="tight")
+    plt.close("all")
+
+    # Percentile scores barplot (good library will have a value below 6)
+    #
+    percentile_scores = (
+        lib_report.percentile()
+        .reset_index()
+        .rename(columns={"index": "sample", 0: "range"})
+    )
+
+    plt.figure(figsize=(2.5, 1.0), dpi=600)
+
+    sns.barplot(
+        "range",
+        "sample",
+        data=percentile_scores,
+        orient="h",
+        order=order,
+        palette=pal,
+        saturation=1,
+        lw=0,
+    )
+
+    plt.grid(True, ls="-", lw=0.1, alpha=1.0, zorder=0, axis="x")
+
+    plt.axvline(6, lw=0.5, zorder=1, color="k")
+
+    plt.xlabel("Fold-change range containing 95% of the guides")
+    plt.ylabel("")
+
+    plt.savefig(f"{RPATH}/librep_fc_range_barplot.pdf", bbox_inches="tight")
+    plt.close("all")
+
+    # Drop-out rates barplot
+    #
+    dropout_rates = lib_report.dropout_rate() * 100
+    dropout_rates = dropout_rates.reset_index().rename(
+        columns={"index": "sample", 0: "dropout"}
+    )
+
+    plt.figure(figsize=(2.5, 1.0), dpi=600)
+
+    ax = sns.barplot(
+        "dropout",
+        "sample",
+        data=dropout_rates,
+        orient="h",
+        order=order,
+        palette=pal,
+        saturation=1,
+        lw=0,
+    )
+
+    plt.grid(True, ls="-", lw=0.1, alpha=1.0, zorder=0, axis="x")
+
+    vals = ax.get_xticks()
+    ax.set_xticklabels([f"{x:.1f}%" for x in vals])
+
+    plt.xlabel("Dropout sgRNAs (zero counts)")
+    plt.ylabel("")
+
+    plt.savefig(f"{RPATH}/librep_dropout_barplot.pdf", bbox_inches="tight")
+    plt.close("all")
+
+    # Matching reports barplots
+    #
+    plot_df = pd.melt(lib_reports.reset_index(), id_vars="index", value_vars=list(pal))
+
+    f, axs = plt.subplots(
+        1,
+        lib_reports.shape[0],
+        sharex="all",
+        sharey="all",
+        figsize=(lib_reports.shape[0] * 0.75, 3.),
+        dpi=600,
+    )
+
+    for i, (dtype, df) in enumerate(plot_df.groupby("index")):
+        ax = axs[i]
+
+        df_ = df.set_index("variable").loc[order].drop(columns=["index"]) * 100
+
+        ax.bar(
+            np.arange(len(order)),
+            df_["value"],
+            color=[pal[c] for c in order],
+            lw=0,
+        )
+
+        ax.set_xticks(np.arange(len(order)))
+        ax.set_xticklabels(order, rotation=90)
+        ax.set_yticks(np.arange(0, 110, 10))
+
+        ax.grid(True, ls="-", lw=0.1, alpha=1.0, zorder=0, axis="y")
+
+        ax.set_title(dtype)
+        ax.set_ylabel("FASTQ reads matching (%)" if i == 0 else "")
+        ax.set_xlabel("")
+
+    plt.subplots_adjust(hspace=0, wspace=0.05)
+    plt.savefig(f"{RPATH}/librep_match_report.pdf", bbox_inches="tight")
+    plt.close("all")
