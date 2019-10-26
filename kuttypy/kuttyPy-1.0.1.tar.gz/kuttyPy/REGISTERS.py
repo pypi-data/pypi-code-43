@@ -1,0 +1,194 @@
+def genlist(**kwargs):
+	return kwargs
+
+VERSIONS = {}
+
+ATMEGA32_REGISTERS = genlist(
+UBRRL	= 0X29,
+UCSRB	= 0X2A,
+UCSRA	= 0X2B,
+UDR	= 0X2C,
+SPCR	= 0X2D,
+SPSR	= 0X2E,
+SPDR	= 0X2F,
+PIND	= 0x30,       # Port D input
+DDRD	= 0x31,	# Port D direction
+PORTD	= 0x32,		# Port D output
+PINC	= 0x33,
+DDRC	= 0x34,
+PORTC	= 0x35,
+PINB	= 0x36,
+DDRB	= 0x37,
+PORTB	= 0x38,
+PINA	= 0x39,
+DDRA	= 0x3A,
+PORTA	= 0x3B,
+EECR	= 0X3C,
+EEDR	= 0X3D,
+EEARL	= 0X3E,
+EEARH	= 0X3F,
+
+TWBR    = 0X20,
+TWSR    = 0X21,
+TWAR    = 0X22,
+TWDR    = 0X23,
+
+ADCL	= 0X24,       # ADC data
+ADCH	= 0X25,
+ADCSRA	= 0X26,	# ADC status/control
+ADMUX	= 0X27,    # ADC channel, reference
+ACSR	= 0X28,
+
+
+
+OCR2	= 0X43,		# Timer/Counter 2  Output Compare  Reg
+TCNT2	= 0X44	,	# Counter2 
+TCCR2	= 0x45,		# Timer/Counter 2 control reg
+ICR1L	= 0X46,
+ICR1H	= 0X47,
+OCR1BL	= 0X48,
+OCR1BH	= 0X49,
+OCR1AL	= 0X4A,
+OCR1AH	= 0X4B,
+TCNT1L	= 0X4C,
+TCNT1H	= 0X4D,
+TCCR1B	= 0X4E,
+TCCR1A	= 0x4F,
+SFIOR	= 0X50,
+
+TCNT0	= 0x52	,	# Timer/ Counter 0
+TCCR0	= 0x53,
+MCUCSR	= 0X54,
+MCUCR	= 0X55,
+TWCR	= 0X56,
+SPMCR	= 0X57,
+TIFR	= 0X58,
+TIMSK	= 0X59,
+GIFR	= 0X5A,
+GICR	= 0X5B,
+OCR0	= 0x5C,
+SPL		= 0X5D,
+SPH		= 0x5E,
+SREG	= 0X5F,
+)
+
+
+ATMEGA32_SPECIALS = genlist(
+PD5 = 'OC1A',
+PD7 = 'OC2',
+PB3 = 'OC0',
+PB1 = 'T1',
+PA0 = 'ADC0',
+PA1 = 'ADC1',
+PA2 = 'ADC2',
+PA3 = 'ADC3',
+PA4 = 'ADC4',
+PA5 = 'ADC5',
+PA6 = 'ADC6',
+PA7 = 'ADC7',
+)
+################################
+VERSION_ATMEGA32 = 99
+VERSIONS[VERSION_ATMEGA32] = {
+'REGISTERS':ATMEGA32_REGISTERS,
+'SPECIALS':ATMEGA32_SPECIALS,
+'examples directory':'atmega32',
+'ADC':['PA0','PA1','PA2','PA3','PA4','PA5','PA6','PA7'],
+'RESTRICTED_REGISTERS':['UBRRL']
+}
+
+
+
+
+########### 328 P
+
+ATMEGA328P_REGISTERS = genlist(
+TWAMR	= 0xBD,
+TWCR	= 0xBC,
+TWDR	= 0xBB,
+TWAR	= 0xBA,
+TWSR	= 0xB9,
+TWBR	= 0xB8,
+ASSR	= 0xB6,
+OCR2B	= 0xB4,
+OCR2A	= 0xB3,
+TCNT2	= 0xB2,
+TCCR2B	= 0xB1,
+TCCR2A	= 0xB0,
+OCR1BH	= 0x8B,
+OCR1BL	= 0x8A,
+OCR1AH	= 0x89,
+OCR1AL	= 0x88,
+ICR1H	= 0x87,
+ICR1L	= 0x86,
+TCNT1H	= 0x85,
+TCNT1L	= 0x84,
+TCCR1C	= 0x82,
+TCCR1B	= 0x81,
+TCCR1A	= 0x80,
+DIDR1	= 0x7F,
+DIDR0	= 0x7E,
+ADMUX	= 0x7C,
+ADCSRB	= 0x7B,
+ADCSRA	= 0x7A,
+ADCH	= 0x79,
+ADCL	= 0x78,
+TIMSK2	= 0x70,
+TIMSK1	= 0x6F,
+TIMSK0	= 0x6E,
+OCR0B	= 0x48,
+OCR0A	= 0x47,
+TCNT0	= 0x46,
+TCCR0B	= 0x45,
+TCCR0A	= 0x44,
+GTCCR	= 0x43,
+EEARH	= 0x42,
+EEARL	= 0x41,
+EEDR	= 0x40,
+EECR	= 0x3F,
+GPIOR0	= 0x3E,
+EIMSK	= 0x3D,
+EIFR	= 0x3C,
+TIFR2	= 0x37,
+TIFR1	= 0x36,
+TIFR0	= 0x35,
+PORTD	= 0x2B,
+DDRD	= 0x2A,
+PIND	= 0x29,
+PORTC	= 0x28,
+DDRC	= 0x27,
+PINC	= 0x26,
+PORTB	= 0x25,
+DDRB	= 0x24,
+PINB	= 0x23,
+
+)
+
+
+ATMEGA328P_SPECIALS = genlist(
+PB1 = 'OC1A',
+PB2 = 'OC1B',
+PB3 = 'OC2',
+PD4 = 'T0',
+PD5 = 'T1',
+PC0 = 'ADC0',
+PC1 = 'ADC1',
+PC2 = 'ADC2',
+PC3 = 'ADC3',
+)
+for a in ['GND','VCC','RESET','5V','3V3','SCL','SDA','AREF','ADC6','ADC7','VIN']:
+	ATMEGA328P_SPECIALS[a] = 'FIXED'
+################################
+VERSION_ATMEGA328P = 100
+VERSIONS[VERSION_ATMEGA328P] = {
+'REGISTERS':ATMEGA328P_REGISTERS,
+'SPECIALS':ATMEGA328P_SPECIALS,
+'ADC':['PC0','PC1','PC2','PC3','PC4','PC5'],
+'examples directory':'atmega328p',
+'RESTRICTED_REGISTERS':['UBRRL']
+}
+
+
+
+
+
