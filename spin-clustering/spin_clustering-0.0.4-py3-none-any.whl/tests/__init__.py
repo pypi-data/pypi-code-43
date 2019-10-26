@@ -1,0 +1,1 @@
+"""SPIN module test unit."""
