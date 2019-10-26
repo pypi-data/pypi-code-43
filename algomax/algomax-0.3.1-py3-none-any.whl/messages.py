@@ -1,0 +1,10 @@
+FILE_NOT_FOUND_TEMPLATE = "Python: can't open file '{0}': [Errno 2] No such file or directory"
+EXPIRE_SCHEDULE_DATE = 'Scheduling DateTime is expired'
+FUTURE_SCHEDULE_DATE = 'Scheduling DateTime has not reached'
+LONG_FUTURE_SCHEDULE_DATE = '{0} days remains to start the scheduler, Zzz, Zzz ...'
+OFF_DAY = 'Oops, We are off, today ;)'
+END_TIME = 'Oops, Working time is over :('
+ALGOMAX = 'a l g o m a x'
+STOP_MESSAGE = 'Press ctrl+c to stop the scheduler ...'
+ALGORITHM_JOB_START = ' Algorithm is running (number of runs = {0}) '
+INVALID_MODE_NAME = 'Invalid schedule mode name, available choices: once, interval'
