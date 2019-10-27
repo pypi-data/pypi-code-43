@@ -1,0 +1,28 @@
+# -*- coding: utf-8 -*-
+from distutils.core import setup
+
+packages = \
+['poetry_dynamic_versioning']
+
+package_data = \
+{'': ['*']}
+
+install_requires = \
+['dunamai>=1.0,<2.0', 'tomlkit>=0.4']
+
+setup_kwargs = {
+    'name': 'poetry-dynamic-versioning',
+    'version': '0.3.0',
+    'description': 'Plugin for Poetry to enable dynamic versioning based on VCS tags',
+    'long_description': '# Dynamic versioning plugin for Poetry\n[![Build status](https://travis-ci.org/mtkennerly/poetry-dynamic-versioning.svg?branch=master)](https://travis-ci.org/mtkennerly/poetry-dynamic-versioning)\n[![Version](https://img.shields.io/pypi/v/poetry-dynamic-versioning)](https://pypi.org/project/poetry-dynamic-versioning)\n[![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](https://opensource.org/licenses/MIT)\n\nThis package is a plugin for [Poetry](https://github.com/sdispater/poetry)\nto enable dynamic versioning based on tags in your version control system,\npowered by [Dunamai](https://github.com/mtkennerly/dunamai).\n\nSince Poetry does not yet officially support plugins\n(refer to [this issue](https://github.com/sdispater/poetry/issues/693))\nas of the time of writing on 2019-10-19, this package takes some novel\nliberties to make the functionality possible. As soon as official support\nlands, this plugin will be updated to do things the official way.\n\n## Installation\nPython 3.5 (or newer) and Poetry 0.12.1 (or newer) are required.\n\n* Run `pip install poetry-dynamic-versioning`\n* Add this to your pyproject.toml:\n  ```toml\n  [tool.poetry-dynamic-versioning]\n  enable = true\n  ```\n\nNote that you must install the plugin in your global Python installation,\n**not** as a dependency in pyroject.toml, because the virtual environment\nthat Poetry creates cannot see Poetry itself and therefore cannot patch it.\n\n## Configuration\nIn your pyproject.toml file, you may configure the following options:\n\n* `[tool.poetry-dynamic-versioning]`: General options.\n  * `enable`: Boolean. Default: false. Since the plugin has to be installed\n    globally, this setting is an opt-in per project. This setting will likely\n    be removed once plugins are officially supported.\n  * `vcs`: String. This is the version control system to check for a version.\n    One of: `any` (default), `git`, `mercurial`, `darcs`, `bazaar`,\n    `subversion`, `fossil`.\n  * `metadata`: Boolean. Default: unset. If true, include the commit hash in\n    the version, and also include a dirty flag if `dirty` is true. If unset,\n    metadata will only be included if you are on a commit without a version tag.\n  * `dirty`: Boolean. Default: false. If true, include a dirty flag in the\n    metadata, indicating whether there are any uncommitted changes.\n  * `pattern`: String. This is a regular expression which will be used to find\n    a tag representing a version. There must be a named capture group `base`\n    with the main part of the version, and optionally you can also have groups\n    named `stage` and `revision` for prereleases. The default is\n    `^v(?P<base>\\d+\\.\\d+\\.\\d+)(-?((?P<stage>[a-zA-Z]+)\\.?(?P<revision>\\d+)?))?$`.\n  * `format`: String. Default: unset. This defines a custom output format for\n    the version. Available substitutions:\n      * `{base}`\n      * `{stage}`\n      * `{revision}`\n      * `{distance}`\n      * `{commit}`\n      * `{dirty}`\n  * `style`: String. Default: unset. One of: `pep440`, `semver`, `pvp`.\n    These are preconfigured output formats. If you set both a `style` and\n    `format`, then the format will be validated against the style\'s rules.\n    If `style` is unset, the default output format will follow PEP 440,\n    but a custom `format` will only be validated if `style` is set explicitly.\n  * `latest-tag`: Boolean. Default: false. If true, then only check the latest\n    tag for a version, rather than looking through all the tags until a suitable\n    one is found to match the `pattern`.\n* `[tool.poetry-dynamic-versioning.subversion]`: Options specific to Subversion.\n  * `tag-dir`: String. Default: `tags`. This is the location of tags relative\n    to the root.\n\nSimple example:\n\n```toml\n[tool.poetry-dynamic-versioning]\nenable = true\nvcs = "git"\nstyle = "semver"\n```\n\n## Implementation\nIn order to side-load plugin functionality into Poetry, this package\ndoes the following:\n\n* Upon installation, it delivers a `zzz_poetry_dynamic_versioning.pth`\n  file to your Python site-packages directory. This forces Python to\n  automatically load the plugin after all other modules have been loaded\n  (or at least those alphabetically prior to `zzz`).\n* It patches `builtins.__import__` so that, whenever the first import from\n  Poetry finishes, `poetry.console.main` will be patched. The reason we have\n  to wait for a Poetry import is in case you\'ve used the get-poetry.py script,\n  in which case there is a gap between when Python is fully loaded and when\n  `~/.poetry/bin/poetry` adds the Poetry lib folder to the PYTHONPATH.\n* The patched version of `poetry.console.main` will then, when called,\n  additionally patch either `poetry.poetry.Poetry.create()` or\n  `poetry.factory.Factory.create_poetry()` (depending on your Poetry version)\n  to replace the version from your pyproject.toml file with the dynamically\n  generated version.\n\n## Development\nPlease refer to [CONTRIBUTING.md](CONTRIBUTING.md).\n',
+    'author': 'Matthew T. Kennerly',
+    'author_email': 'mtkennerly@gmail.com',
+    'url': 'https://github.com/mtkennerly/poetry-dynamic-versioning',
+    'packages': packages,
+    'package_data': package_data,
+    'install_requires': install_requires,
+    'python_requires': '>=3.5,<4.0',
+}
+
+
+setup(**setup_kwargs)
