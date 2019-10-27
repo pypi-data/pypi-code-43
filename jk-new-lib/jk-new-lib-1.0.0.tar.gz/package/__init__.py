@@ -1,0 +1,1 @@
+witaj = 'Cześć, Kuba'
