@@ -1,0 +1,2 @@
+class SsmError(Exception):
+    pass
