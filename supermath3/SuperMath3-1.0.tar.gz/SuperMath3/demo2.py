@@ -1,0 +1,2 @@
+def mutiple():
+    print("mutiple")
