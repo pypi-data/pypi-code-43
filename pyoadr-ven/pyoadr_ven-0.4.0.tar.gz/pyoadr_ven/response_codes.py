@@ -1,0 +1,14 @@
+HTTP_STATUS_CODES = {
+    200: "200 OK",
+    201: "201 Created",
+    204: "204 No Content",
+    500: "500 Internal Error",
+}
+
+# OADR Response Codes
+OADR_VALID_RESPONSE = "200"
+OADR_MOD_NUMBER_OUT_OF_ORDER = "450"
+OADR_NOT_RECOGNISED = "453"
+OADR_INVALID_DATA = "454"
+OADR_BAD_DATA = "459"
+OADR_BAD_SIGNAL = "460"
