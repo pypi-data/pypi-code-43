@@ -1,0 +1,998 @@
+# Copyright (c) 2015 SUSE Linux GmbH.  All rights reserved.
+#
+# This file is part of kiwi.
+#
+# kiwi is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# kiwi is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with kiwi.  If not, see <http://www.gnu.org/licenses/>
+#
+import os
+import logging
+import platform
+import glob
+import shutil
+from collections import OrderedDict
+
+# project
+from kiwi.bootloader.config.base import BootLoaderConfigBase
+from kiwi.bootloader.template.grub2 import BootLoaderTemplateGrub2
+from kiwi.command import Command
+from kiwi.defaults import Defaults
+from kiwi.firmware import FirmWare
+from kiwi.path import Path
+from kiwi.utils.sync import DataSync
+from kiwi.utils.sysconfig import SysConfig
+
+from kiwi.exceptions import (
+    KiwiTemplateError,
+    KiwiBootLoaderGrubPlatformError,
+    KiwiBootLoaderGrubModulesError,
+    KiwiBootLoaderGrubSecureBootError,
+    KiwiBootLoaderGrubFontError,
+)
+
+log = logging.getLogger('kiwi')
+
+
+class BootLoaderConfigGrub2(BootLoaderConfigBase):
+    """
+    **grub2 bootloader configuration.**
+    """
+    def post_init(self, custom_args):
+        """
+        grub2 post initialization method
+
+        :param dict custom_args:
+            Contains grub config arguments
+
+            .. code:: python
+
+                {'grub_directory_name': 'grub|grub2'}
+        """
+        self.custom_args = custom_args
+        arch = platform.machine()
+        if arch == 'x86_64':
+            # grub2 support for bios and efi systems
+            self.arch = arch
+        elif arch.startswith('ppc64'):
+            # grub2 support for ofw and opal systems
+            self.arch = arch
+        elif arch == 'i686' or arch == 'i586':
+            # grub2 support for bios systems
+            self.arch = 'ix86'
+        elif arch == 'aarch64' or arch.startswith('arm'):
+            # grub2 support for efi systems
+            self.arch = arch
+        else:
+            raise KiwiBootLoaderGrubPlatformError(
+                'host architecture %s not supported for grub2 setup' % arch
+            )
+
+        if self.custom_args and 'grub_directory_name' in self.custom_args:
+            self.boot_directory_name = self.custom_args['grub_directory_name']
+        else:
+            self.boot_directory_name = 'grub'
+
+        self.terminal = self.xml_state.build_type.get_bootloader_console() \
+            or 'gfxterm'
+        self.gfxmode = self.get_gfxmode('grub2')
+        self.theme = self.get_boot_theme()
+        self.timeout = self.get_boot_timeout_seconds()
+        self.continue_on_timeout = self.get_continue_on_timeout()
+        self.failsafe_boot = self.failsafe_boot_entry_requested()
+        self.mediacheck_boot = self.xml_state.build_type.get_mediacheck()
+        self.xen_guest = self.xml_state.is_xen_guest()
+        self.firmware = FirmWare(
+            self.xml_state
+        )
+
+        self.live_type = self.xml_state.build_type.get_flags()
+        if not self.live_type:
+            self.live_type = Defaults.get_default_live_iso_type()
+
+        self.volume_id = self.xml_state.build_type.get_volid() or \
+            Defaults.get_volume_id()
+        self.install_volid = self.xml_state.build_type.get_volid() or \
+            Defaults.get_install_volume_id()
+
+        self.live_boot_options = [
+            'root=live:CDLABEL={0}'.format(self.volume_id),
+            'rd.live.image'
+        ]
+        self.install_boot_options = [
+            'loglevel=0'
+        ]
+        if self.xml_state.get_initrd_system() == 'dracut':
+            self.install_boot_options.append(
+                'root=install:CDLABEL={0}'.format(self.install_volid)
+            )
+        if self.xml_state.build_type.get_hybridpersistent():
+            self.live_boot_options += \
+                Defaults.get_live_iso_persistent_boot_options(
+                    self.xml_state.build_type.get_hybridpersistent_filesystem()
+                )
+
+        if self.xml_state.is_xen_server():
+            self.hybrid_boot = False
+            self.multiboot = True
+        elif self.xen_guest:
+            self.hybrid_boot = False
+            self.multiboot = False
+        else:
+            self.hybrid_boot = True
+            self.multiboot = False
+
+        self.grub2 = BootLoaderTemplateGrub2()
+        self.config = None
+        self.efi_boot_path = None
+        self.cmdline_failsafe = None
+        self.cmdline = None
+        self.iso_boot = False
+        self.shim_fallback_setup = False
+
+    def write(self):
+        """
+        Write bootloader configuration
+
+        Writes grub.cfg template by KIWI if template system is used
+        Also copies grub config file to alternative boot path for
+        EFI systems in fallback mode
+        """
+        if self.config:
+            log.info('Writing KIWI template grub.cfg file')
+            config_dir = self._get_grub2_boot_path()
+            config_file = config_dir + '/grub.cfg'
+            Path.create(config_dir)
+            with open(config_file, 'w') as config:
+                config.write(self.config)
+
+            if self.firmware.efi_mode():
+                self._copy_grub_config_to_efi_path(
+                    self.root_dir, config_file
+                )
+
+    def write_meta_data(self, root_uuid=None, boot_options='', iso_boot=False):
+        """
+        Write bootloader setup meta data files
+
+        * cmdline arguments initialization
+        * creation of embedded fat efi image for EFI ISO boot
+        * etc/default/grub setup file
+        * etc/sysconfig/bootloader
+
+        :param string root_uuid: root device UUID
+        :param string boot_options: kernel options as string
+        :param bool iso_boot: indicate target is an ISO
+        """
+        self.cmdline = ' '.join(
+            [self.get_boot_cmdline(root_uuid), boot_options]
+        )
+        self.cmdline_failsafe = ' '.join(
+            [self.cmdline, Defaults.get_failsafe_kernel_options(), boot_options]
+        )
+        self.iso_boot = iso_boot
+
+        if self.iso_boot:
+            self._create_embedded_fat_efi_image()
+
+        self._setup_default_grub()
+        self._setup_sysconfig_bootloader()
+
+    def setup_disk_image_config(
+        self, boot_uuid=None, root_uuid=None, hypervisor=None,
+        kernel=None, initrd=None, boot_options={}
+    ):
+        """
+        Create grub2 config file to boot from disk using grub2-mkconfig
+
+        :param string boot_uuid: unused
+        :param string root_uuid: unused
+        :param string hypervisor: unused
+        :param string kernel: unused
+        :param string initrd: unused
+        :param string boot_options:
+            options dictionary that has to contain the root and boot
+            device and optional volume configuration. KIWI has to
+            mount the system prior to run grub2-mkconfig.
+
+            .. code:: python
+
+                {
+                    'root_device': string,
+                    'boot_device': string,
+                    'efi_device': string,
+                    'system_volumes': volume_manager_instance.get_volumes()
+                }
+        """
+        self._mount_system(
+            boot_options.get('root_device'),
+            boot_options.get('boot_device'),
+            boot_options.get('efi_device'),
+            boot_options.get('system_volumes')
+        )
+        config_file = os.sep.join(
+            [
+                self.root_mount.mountpoint, 'boot',
+                self.boot_directory_name, 'grub.cfg'
+            ]
+        )
+        Command.run(
+            [
+                'chroot', self.root_mount.mountpoint,
+                self._get_grub2_mkconfig_tool(), '-o',
+                config_file.replace(self.root_mount.mountpoint, '')
+            ]
+        )
+        if self.firmware.efi_mode():
+            self._copy_grub_config_to_efi_path(
+                self.root_mount.mountpoint, config_file
+            )
+
+    def setup_install_image_config(
+        self, mbrid, hypervisor='xen.gz', kernel='linux', initrd='initrd'
+    ):
+        """
+        Create grub2 config file to boot from an ISO install image
+
+        :param string mbrid: mbrid file name on boot device
+        :param string hypervisor: hypervisor name
+        :param string kernel: kernel name
+        :param string initrd: initrd name
+        """
+        log.info('Creating grub2 install config file from template')
+        parameters = {
+            'search_params': '--file --set=root /boot/' + mbrid.get_id(),
+            'default_boot': self.get_install_image_boot_default(),
+            'kernel_file': kernel,
+            'initrd_file': initrd,
+            'boot_options': ' '.join(
+                [self.cmdline] + self.install_boot_options
+            ),
+            'failsafe_boot_options': ' '.join(
+                [self.cmdline_failsafe] + self.install_boot_options
+            ),
+            'gfxmode': self.gfxmode,
+            'theme': self.theme,
+            'boot_timeout': self.timeout,
+            'title': self.get_menu_entry_install_title(),
+            'bootpath': self.get_boot_path('iso'),
+            'boot_directory_name': self.boot_directory_name,
+            'efi_image_name': Defaults.get_efi_image_name(self.arch),
+            'terminal_setup': self.terminal
+        }
+        if self.multiboot:
+            log.info('--> Using multiboot install template')
+            parameters['hypervisor'] = hypervisor
+            template = self.grub2.get_multiboot_install_template(
+                self.failsafe_boot, self.terminal,
+                self.continue_on_timeout
+            )
+        else:
+            log.info('--> Using standard boot install template')
+            hybrid_boot = True
+            template = self.grub2.get_install_template(
+                self.failsafe_boot, hybrid_boot, self.terminal,
+                self.continue_on_timeout
+            )
+        try:
+            self.config = template.substitute(parameters)
+        except Exception as e:
+            raise KiwiTemplateError(
+                '%s: %s' % (type(e).__name__, format(e))
+            )
+
+    def setup_live_image_config(
+        self, mbrid, hypervisor='xen.gz', kernel='linux', initrd='initrd'
+    ):
+        """
+        Create grub2 config file to boot a live media ISO image
+
+        :param string mbrid: mbrid file name on boot device
+        :param string hypervisor: hypervisor name
+        :param string kernel: kernel name
+        :param string initrd: initrd name
+        """
+        log.info('Creating grub2 live ISO config file from template')
+        parameters = {
+            'search_params': '--file --set=root /boot/' + mbrid.get_id(),
+            'default_boot': '0',
+            'kernel_file': kernel,
+            'initrd_file': initrd,
+            'boot_options': ' '.join(
+                [self.cmdline] + self.live_boot_options
+            ),
+            'failsafe_boot_options': ' '.join(
+                [self.cmdline_failsafe] + self.live_boot_options
+            ),
+            'gfxmode': self.gfxmode,
+            'theme': self.theme,
+            'boot_timeout': self.timeout,
+            'title': self.get_menu_entry_title(plain=True),
+            'bootpath': self.get_boot_path('iso'),
+            'boot_directory_name': self.boot_directory_name,
+            'efi_image_name': Defaults.get_efi_image_name(self.arch),
+            'terminal_setup': self.terminal
+        }
+        if self.multiboot:
+            log.info('--> Using multiboot template')
+            parameters['hypervisor'] = hypervisor
+            template = self.grub2.get_multiboot_iso_template(
+                self.failsafe_boot, self.terminal, self.mediacheck_boot
+            )
+        else:
+            log.info('--> Using standard boot template')
+            hybrid_boot = True
+            template = self.grub2.get_iso_template(
+                self.failsafe_boot, hybrid_boot,
+                self.terminal, self.mediacheck_boot
+            )
+        try:
+            self.config = template.substitute(parameters)
+        except Exception as e:
+            raise KiwiTemplateError(
+                '%s: %s' % (type(e).__name__, format(e))
+            )
+
+    def setup_install_boot_images(self, mbrid, lookup_path=None):
+        """
+        Create/Provide grub2 boot images and metadata
+
+        In order to boot from the ISO grub2 modules, images and theme
+        data needs to be created and provided at the correct place on
+        the iso filesystem
+
+        :param string mbrid: mbrid file name on boot device
+        :param string lookup_path: custom module lookup path
+        """
+        log.info('Creating grub2 bootloader images')
+        self.efi_boot_path = self.create_efi_path(in_sub_dir='')
+
+        log.info('--> Creating identifier file %s', mbrid.get_id())
+        Path.create(
+            self._get_grub2_boot_path()
+        )
+        mbrid.write(
+            self.boot_dir + '/boot/' + mbrid.get_id()
+        )
+        mbrid.write(
+            self.boot_dir + '/boot/mbrid'
+        )
+
+        self._copy_theme_data_to_boot_directory(lookup_path, 'iso')
+
+        if self._supports_bios_modules():
+            self._copy_bios_modules_to_boot_directory(lookup_path)
+            self._setup_bios_image(mbrid=mbrid, lookup_path=lookup_path)
+
+        if self.firmware.efi_mode():
+            self._setup_EFI_path(lookup_path)
+
+        if self.firmware.efi_mode() == 'efi':
+            self._setup_efi_image(mbrid=mbrid, lookup_path=lookup_path)
+            self._copy_efi_modules_to_boot_directory(lookup_path)
+        elif self.firmware.efi_mode() == 'uefi':
+            self._copy_efi_modules_to_boot_directory(lookup_path)
+            self._setup_secure_boot_efi_image(lookup_path)
+
+    def setup_live_boot_images(self, mbrid, lookup_path=None):
+        """
+        Create/Provide grub2 boot images and metadata
+
+        Calls setup_install_boot_images because no different action required
+        """
+        self.setup_install_boot_images(mbrid, lookup_path)
+
+    def setup_disk_boot_images(self, boot_uuid, lookup_path=None):
+        """
+        Create/Provide grub2 boot images and metadata
+
+        In order to boot from the disk grub2 modules, images and theme
+        data needs to be created and provided at the correct place in
+        the filesystem
+
+        :param string boot_uuid: boot device UUID
+        :param string lookup_path: custom module lookup path
+        """
+        log.info('Creating grub2 bootloader images')
+
+        if self.firmware.efi_mode():
+            self.efi_boot_path = self.create_efi_path()
+
+        self._copy_theme_data_to_boot_directory(lookup_path, 'disk')
+
+        if not self.xen_guest and self._supports_bios_modules():
+            self._copy_bios_modules_to_boot_directory(lookup_path)
+
+        if self.firmware.efi_mode() == 'efi':
+            self._setup_efi_image(uuid=boot_uuid, lookup_path=lookup_path)
+            self._copy_efi_modules_to_boot_directory(lookup_path)
+        elif self.firmware.efi_mode() == 'uefi':
+            self._copy_efi_modules_to_boot_directory(lookup_path)
+            if not self._get_shim_install():
+                self.shim_fallback_setup = True
+                self._setup_secure_boot_efi_image(lookup_path)
+
+        if self.xen_guest:
+            self._copy_xen_modules_to_boot_directory(lookup_path)
+
+    def _copy_grub_config_to_efi_path(self, root_path, config_file):
+        if self.iso_boot or self.shim_fallback_setup:
+            efi_boot_path = Defaults.get_shim_vendor_directory(
+                root_path
+            )
+            if not efi_boot_path:
+                efi_boot_path = os.path.normpath(
+                    os.sep.join([root_path, 'boot/efi/EFI/BOOT'])
+                )
+            Path.create(efi_boot_path)
+            grub_config_file_for_efi_boot = os.sep.join(
+                [efi_boot_path, 'grub.cfg']
+            )
+            log.info(
+                'Copying {0} -> {1} to be found by EFI'.format(
+                    config_file, grub_config_file_for_efi_boot
+                )
+            )
+            shutil.copy(
+                config_file, grub_config_file_for_efi_boot
+            )
+
+    def _supports_bios_modules(self):
+        if self.arch == 'ix86' or self.arch == 'x86_64':
+            return True
+        return False
+
+    def _setup_sysconfig_bootloader(self):
+        """
+        Create or update etc/sysconfig/bootloader by the following
+        parameters required according to the grub2 bootloader setup
+
+        * LOADER_TYPE
+        * LOADER_LOCATION
+        * DEFAULT_APPEND
+        * FAILSAFE_APPEND
+        """
+        sysconfig_bootloader_entries = {
+            'LOADER_TYPE':
+                'grub2-efi' if self.firmware.efi_mode() else 'grub2',
+            'LOADER_LOCATION':
+                'none' if self.firmware.efi_mode() else 'mbr'
+        }
+        if self.cmdline:
+            sysconfig_bootloader_entries['DEFAULT_APPEND'] = '"{0}"'.format(
+                self.cmdline
+            )
+        if self.cmdline_failsafe:
+            sysconfig_bootloader_entries['FAILSAFE_APPEND'] = '"{0}"'.format(
+                self.cmdline_failsafe
+            )
+
+        sysconfig_bootloader_location = ''.join(
+            [self.root_dir, '/etc/sysconfig/']
+        )
+        if os.path.exists(sysconfig_bootloader_location):
+            log.info('Writing sysconfig bootloader file')
+            sysconfig_bootloader_file = ''.join(
+                [sysconfig_bootloader_location, 'bootloader']
+            )
+            sysconfig_bootloader = SysConfig(
+                sysconfig_bootloader_file
+            )
+            sysconfig_bootloader_entries_sorted = OrderedDict(
+                sorted(sysconfig_bootloader_entries.items())
+            )
+            for key, value in list(sysconfig_bootloader_entries_sorted.items()):
+                log.info('--> {0}:{1}'.format(key, value))
+                sysconfig_bootloader[key] = value
+            sysconfig_bootloader.write()
+
+    def _setup_default_grub(self):  # noqa: C901
+        """
+        Create or update etc/default/grub by parameters required
+        according to the root filesystem setup
+
+        * GRUB_TIMEOUT
+        * SUSE_BTRFS_SNAPSHOT_BOOTING
+        * GRUB_BACKGROUND
+        * GRUB_THEME
+        * GRUB_USE_LINUXEFI
+        * GRUB_USE_INITRDEFI
+        * GRUB_SERIAL_COMMAND
+        * GRUB_CMDLINE_LINUX_DEFAULT
+        * GRUB_GFXMODE
+        * GRUB_TERMINAL
+        * GRUB_DISTRIBUTOR
+        """
+        grub_default_entries = {
+            'GRUB_TIMEOUT': self.timeout,
+            'GRUB_GFXMODE': self.gfxmode,
+            'GRUB_TERMINAL': '"{0}"'.format(self.terminal),
+            'GRUB_DISTRIBUTOR': '"{0}"'.format(self.get_menu_entry_title())
+        }
+        if self.cmdline:
+            grub_default_entries['GRUB_CMDLINE_LINUX_DEFAULT'] = '"{0}"'.format(
+                self.cmdline
+            )
+        if self.terminal and 'serial' in self.terminal:
+            serial_format = '"serial {0} {1} {2} {3} {4}"'
+            grub_default_entries['GRUB_SERIAL_COMMAND'] = serial_format.format(
+                '--speed=38400',
+                '--unit=0',
+                '--word=8',
+                '--parity=no',
+                '--stop=1'
+            )
+        if self.theme:
+            theme_setup = '{0}/{1}/theme.txt'
+            grub_default_entries['GRUB_THEME'] = theme_setup.format(
+                ''.join(['/boot/', self.boot_directory_name, '/themes']),
+                self.theme
+            )
+            theme_background = '{0}/{1}/background.png'.format(
+                ''.join(['/boot/', self.boot_directory_name, '/themes']),
+                self.theme
+            )
+            if os.path.exists(os.sep.join([self.root_dir, theme_background])):
+                grub_default_entries['GRUB_BACKGROUND'] = theme_background
+        if self.firmware.efi_mode():
+            # linuxefi/initrdefi only exist on x86, others always use efi
+            if self.arch == 'ix86' or self.arch == 'x86_64':
+                use_linuxefi_implemented = Command.run(
+                    [
+                        'grep', '-q', 'GRUB_USE_LINUXEFI',
+                        Defaults.get_grub_config_tool()
+                    ], raise_on_error=False
+                )
+                if use_linuxefi_implemented.returncode == 0:
+                    grub_default_entries['GRUB_USE_LINUXEFI'] = 'true'
+                    grub_default_entries['GRUB_USE_INITRDEFI'] = 'true'
+        if self.xml_state.build_type.get_btrfs_root_is_snapshot():
+            grub_default_entries['SUSE_BTRFS_SNAPSHOT_BOOTING'] = 'true'
+        if self.custom_args.get('boot_is_crypto'):
+            grub_default_entries['GRUB_ENABLE_CRYPTODISK'] = 'y'
+
+        if grub_default_entries:
+            log.info('Writing grub2 defaults file')
+            grub_default_location = ''.join([self.root_dir, '/etc/default/'])
+            if os.path.exists(grub_default_location):
+                grub_default_file = ''.join([grub_default_location, 'grub'])
+                grub_default = SysConfig(grub_default_file)
+                grub_default_entries_sorted = OrderedDict(
+                    sorted(grub_default_entries.items())
+                )
+                for key, value in list(grub_default_entries_sorted.items()):
+                    log.info('--> {0}:{1}'.format(key, value))
+                    grub_default[key] = value
+                grub_default.write()
+
+    def _setup_secure_boot_efi_image(self, lookup_path):
+        """
+        Provide the shim loader and the shim signed grub2 loader
+        in the required boot path. Normally this task is done by
+        the shim-install tool. However, shim-install does not exist
+        on all distributions and the script does not operate well
+        in e.g CD environments from which we generate live and/or
+        install media. Thus shim-install is used if possible at
+        install time of the bootloader because it requires access
+        to the target block device. In any other case this setup
+        code should act as the fallback solution
+        """
+        log.warning(
+            '--> Running fallback setup for shim secure boot efi image'
+        )
+        if not lookup_path:
+            lookup_path = self.boot_dir
+        grub_image = Defaults.get_signed_grub_loader(lookup_path)
+        if not grub_image:
+            raise KiwiBootLoaderGrubSecureBootError(
+                'Signed grub2 efi loader not found'
+            )
+        shim_image = Defaults.get_shim_loader(lookup_path)
+        if shim_image:
+            # The shim concept is based on a two step system including a
+            # grub image(shim) that got signed by Microsoft followed by
+            # a grub image that got signed by the shim. The shim image
+            # is the one that gets loaded by the firmware which itself
+            # loads the second stage grub image
+            Command.run(
+                ['cp', shim_image, self._get_efi_image_name()]
+            )
+            Command.run(
+                ['cp', grub_image, self.efi_boot_path]
+            )
+        else:
+            # Without shim a self signed grub image is used that
+            # gets loaded by the firmware
+            Command.run(
+                ['cp', grub_image, self._get_efi_image_name()]
+            )
+
+    def _setup_efi_image(self, uuid=None, mbrid=None, lookup_path=None):
+        """
+        Provide the unsigned grub2 efi image in the required boot path
+        If a prebuilt efi image as provided by the distribution could
+        be found, this image will be used. If no such image could be
+        found we create a custom image with a pre defined set of
+        grub modules
+        """
+        if not lookup_path:
+            lookup_path = self.boot_dir
+        grub_image = Defaults.get_unsigned_grub_loader(lookup_path)
+        if grub_image:
+            log.info('--> Using prebuilt unsigned efi image')
+            Command.run(
+                ['cp', grub_image, self._get_efi_image_name()]
+            )
+            self._create_efi_config_search(uuid, mbrid)
+        else:
+            log.info('--> Creating unsigned efi image')
+            self._create_efi_image(
+                uuid, mbrid, lookup_path
+            )
+
+    def _setup_bios_image(self, mbrid=None, lookup_path=None):
+        """
+        Provide bios grub image
+        """
+        if not lookup_path:
+            lookup_path = self.boot_dir
+        grub_image = Defaults.get_grub_bios_core_loader(lookup_path)
+        if grub_image:
+            log.info('--> Using prebuilt bios image')
+        else:
+            log.info('--> Creating bios image')
+            self._create_bios_image(
+                mbrid, lookup_path
+            )
+        bash_command = ' '.join(
+            [
+                'cat',
+                self._get_bios_modules_path(lookup_path) + '/cdboot.img',
+                grub_image or self._get_bios_image_name(lookup_path),
+                '>',
+                os.sep.join(
+                    [
+                        self._get_bios_modules_path(lookup_path),
+                        Defaults.get_isolinux_bios_grub_loader()
+                    ]
+                )
+            ]
+        )
+        Command.run(
+            ['bash', '-c', bash_command]
+        )
+
+    def _create_embedded_fat_efi_image(self):
+        Path.create(self.boot_dir + '/boot/' + self.arch)
+        efi_fat_image = ''.join(
+            [self.boot_dir + '/boot/', self.arch, '/efi']
+        )
+        Command.run(
+            ['qemu-img', 'create', efi_fat_image, '15M']
+        )
+        Command.run(
+            ['mkdosfs', '-n', 'BOOT', efi_fat_image]
+        )
+        Command.run(
+            [
+                'mcopy', '-Do', '-s', '-i', efi_fat_image,
+                self.boot_dir + '/EFI', '::'
+            ]
+        )
+
+    def _create_efi_image(self, uuid=None, mbrid=None, lookup_path=None):
+        early_boot_script = os.path.normpath(
+            os.sep.join([self.efi_boot_path, 'earlyboot.cfg'])
+        )
+        if uuid:
+            self._create_early_boot_script_for_uuid_search(
+                early_boot_script, uuid
+            )
+        else:
+            self._create_early_boot_script_for_mbrid_search(
+                early_boot_script, mbrid
+            )
+        module_list = Defaults.get_grub_efi_modules(multiboot=self.xen_guest)
+        module_path = self._get_efi_modules_path(lookup_path)
+        if os.path.exists(module_path + '/linuxefi.mod'):
+            module_list.append('linuxefi')
+        Command.run(
+            [
+                self._get_grub2_mkimage_tool() or 'grub2-mkimage',
+                '-O', Defaults.get_efi_module_directory_name(self.arch),
+                '-o', self._get_efi_image_name(),
+                '-c', early_boot_script,
+                '-p', self.get_boot_path() + '/' + self.boot_directory_name,
+                '-d', module_path
+            ] + module_list
+        )
+
+    def _create_efi_config_search(self, uuid=None, mbrid=None):
+        efi_boot_config = self.efi_boot_path + '/grub.cfg'
+        if uuid:
+            self._create_early_boot_script_for_uuid_search(
+                efi_boot_config, uuid
+            )
+        else:
+            self._create_early_boot_script_for_mbrid_search(
+                efi_boot_config, mbrid
+            )
+        with open(efi_boot_config, 'a') as config:
+            config.write('normal{0}'.format(os.linesep))
+
+    def _create_bios_image(self, mbrid=None, lookup_path=None):
+        early_boot_script = os.path.normpath(
+            os.sep.join([self._get_grub2_boot_path(), 'earlyboot.cfg'])
+        )
+        self._create_early_boot_script_for_mbrid_search(
+            early_boot_script, mbrid
+        )
+        Command.run(
+            [
+                self._get_grub2_mkimage_tool() or 'grub2-mkimage',
+                '-O', Defaults.get_bios_module_directory_name(),
+                '-o', self._get_bios_image_name(lookup_path),
+                '-c', early_boot_script,
+                '-p', self.get_boot_path() + '/' + self.boot_directory_name,
+                '-d', self._get_bios_modules_path(lookup_path)
+            ] + Defaults.get_grub_bios_modules(multiboot=self.xen_guest)
+        )
+
+    def _create_early_boot_script_for_uuid_search(self, filename, uuid):
+        with open(filename, 'w') as early_boot:
+            early_boot.write(
+                'set btrfs_relative_path="yes"{0}'.format(os.linesep)
+            )
+            if self.custom_args.get('boot_is_crypto'):
+                early_boot.write(
+                    'insmod cryptodisk{0}'.format(os.linesep)
+                )
+                early_boot.write(
+                    'insmod luks{0}'.format(os.linesep)
+                )
+                early_boot.write(
+                    'cryptomount -u {0}{1}'.format(
+                        uuid.replace('-', ''), os.linesep
+                    )
+                )
+                early_boot.write(
+                    'set root="cryptouuid/{0}"{1}'.format(
+                        uuid.replace('-', ''), os.linesep
+                    )
+                )
+            early_boot.write(
+                'search --fs-uuid --set=root {0}{1}'.format(uuid, os.linesep)
+            )
+            early_boot.write(
+                'set prefix=($root){0}/{1}{2}'.format(
+                    self.get_boot_path(), self.boot_directory_name, os.linesep
+                )
+            )
+
+    def _create_early_boot_script_for_mbrid_search(self, filename, mbrid):
+        with open(filename, 'w') as early_boot:
+            early_boot.write(
+                'set btrfs_relative_path="yes"{0}'.format(os.linesep)
+            )
+            early_boot.write(
+                'search --file --set=root /boot/{0}{1}'.format(
+                    mbrid.get_id(), os.linesep
+                )
+            )
+            early_boot.write(
+                'set prefix=($root)/boot/{0}{1}'.format(
+                    self.boot_directory_name, os.linesep
+                )
+            )
+
+    def _get_grub2_mkimage_tool(self):
+        for grub_mkimage_tool in ['grub2-mkimage', 'grub-mkimage']:
+            if Path.which(grub_mkimage_tool):
+                return grub_mkimage_tool
+
+    def _get_grub2_mkconfig_tool(self):
+        for grub_mkconfig_tool in ['grub2-mkconfig', 'grub-mkconfig']:
+            if Path.which(grub_mkconfig_tool):
+                return grub_mkconfig_tool
+
+    def _get_grub2_boot_path(self):
+        return self.boot_dir + '/boot/' + self.boot_directory_name
+
+    def _get_efi_image_name(self):
+        return os.sep.join(
+            [
+                self.efi_boot_path,
+                Defaults.get_efi_image_name(self.arch)
+            ]
+        )
+
+    def _get_bios_image_name(self, lookup_path):
+        return os.sep.join(
+            [
+                self._get_bios_modules_path(lookup_path),
+                Defaults.get_bios_image_name()
+            ]
+        )
+
+    def _get_efi_modules_path(self, lookup_path=None):
+        return self._get_module_path(
+            Defaults.get_efi_module_directory_name(self.arch),
+            lookup_path
+        )
+
+    def _get_bios_modules_path(self, lookup_path=None):
+        return self._get_module_path('i386-pc', lookup_path)
+
+    def _get_xen_modules_path(self, lookup_path=None):
+        return self._get_module_path(
+            Defaults.get_efi_module_directory_name('x86_64_xen'),
+            lookup_path
+        )
+
+    def _get_module_path(self, format_name, lookup_path=None):
+        if not lookup_path:
+            lookup_path = self.boot_dir
+        return Defaults.get_grub_path(lookup_path, format_name)
+
+    def _find_theme_background_file(self, lookup_path):
+        background_pattern = os.sep.join(
+            [
+                lookup_path, 'boot', self.boot_directory_name, 'themes',
+                '*', 'background.png'
+            ]
+        )
+        for background_file in glob.iglob(background_pattern):
+            return background_file
+
+    def _copy_theme_data_to_boot_directory(self, lookup_path, target):
+        if not lookup_path:
+            lookup_path = self.boot_dir
+        boot_fonts_dir = os.path.normpath(
+            os.sep.join(
+                [
+                    self.boot_dir,
+                    self.get_boot_path(target),
+                    self.boot_directory_name,
+                    'fonts'
+                ]
+            )
+        )
+        Path.create(boot_fonts_dir)
+        boot_unicode_font = boot_fonts_dir + '/unicode.pf2'
+        if not os.path.exists(boot_unicode_font):
+            try:
+                unicode_font = Defaults.get_grub_path(
+                    lookup_path, 'unicode.pf2'
+                )
+                Command.run(
+                    ['cp', unicode_font, boot_unicode_font]
+                )
+            except Exception as issue:
+                raise KiwiBootLoaderGrubFontError(
+                    'Setting up unicode font failed with {0}'.format(issue)
+                )
+
+        boot_theme_dir = os.sep.join(
+            [self.boot_dir, 'boot', self.boot_directory_name, 'themes']
+        )
+        Path.create(boot_theme_dir)
+
+        if self.theme:
+            theme_dir = Defaults.get_grub_path(
+                lookup_path, 'themes/' + self.theme, raise_on_error=False
+            )
+            boot_theme_background_file = self._find_theme_background_file(
+                lookup_path
+            )
+            if theme_dir and os.path.exists(theme_dir):
+                if boot_theme_background_file:
+                    # A background file was found. Preserve a copy of the
+                    # file which was created at install time of the theme
+                    # package by the activate-theme script
+                    boot_theme_background_backup_file = os.sep.join(
+                        [self.boot_dir, 'background.png']
+                    )
+                    Command.run(
+                        [
+                            'cp', boot_theme_background_file,
+                            boot_theme_background_backup_file
+                        ]
+                    )
+                # sync theme data from install path to boot path
+                data = DataSync(
+                    theme_dir, boot_theme_dir
+                )
+                data.sync_data(
+                    options=['-a']
+                )
+                if boot_theme_background_file:
+                    # Install preserved background file to the theme
+                    Command.run(
+                        [
+                            'mv', boot_theme_background_backup_file,
+                            os.sep.join([boot_theme_dir, self.theme])
+                        ]
+                    )
+            elif boot_theme_background_file:
+                # assume all theme data is in the directory of the
+                # background file and just sync that directory to the
+                # boot path
+                data = DataSync(
+                    os.path.dirname(boot_theme_background_file), boot_theme_dir
+                )
+                data.sync_data(
+                    options=['-a']
+                )
+
+        self._check_boot_theme_exists()
+
+    def _check_boot_theme_exists(self):
+        if self.theme:
+            theme_dir = os.sep.join(
+                [
+                    self.boot_dir, 'boot', self.boot_directory_name,
+                    'themes', self.theme
+                ]
+            )
+            if not os.path.exists(theme_dir):
+                log.warning('Theme %s not found', theme_dir)
+                log.warning('Set bootloader terminal to console mode')
+                self.terminal = 'console'
+
+    def _setup_EFI_path(self, lookup_path):
+        """
+        Copy efi boot data from lookup_path to the root directory
+        """
+        if not lookup_path:
+            lookup_path = self.boot_dir
+        efi_path = lookup_path + '/boot/efi/'
+        if os.path.exists(efi_path):
+            efi_data = DataSync(efi_path, self.boot_dir)
+            efi_data.sync_data(options=['-a'])
+
+    def _copy_efi_modules_to_boot_directory(self, lookup_path):
+        self._copy_modules_to_boot_directory_from(
+            self._get_efi_modules_path(lookup_path)
+        )
+
+    def _copy_bios_modules_to_boot_directory(self, lookup_path):
+        self._copy_modules_to_boot_directory_from(
+            self._get_bios_modules_path(lookup_path)
+        )
+
+    def _copy_xen_modules_to_boot_directory(self, lookup_path):
+        self._copy_modules_to_boot_directory_from(
+            self._get_xen_modules_path(lookup_path)
+        )
+
+    def _copy_modules_to_boot_directory_from(self, module_path):
+        boot_module_path = \
+            self._get_grub2_boot_path() + '/' + os.path.basename(module_path)
+        try:
+            data = DataSync(
+                module_path + '/', boot_module_path
+            )
+            data.sync_data(
+                options=['-a'], exclude=['*.module']
+            )
+        except Exception as e:
+            raise KiwiBootLoaderGrubModulesError(
+                'Module synchronisation failed with: %s' % format(e)
+            )
+
+    def _get_shim_install(self):
+        chroot_env = {
+            'PATH': os.sep.join([self.boot_dir, 'usr', 'sbin'])
+        }
+        return Path.which(
+            filename='shim-install', custom_env=chroot_env
+        )
